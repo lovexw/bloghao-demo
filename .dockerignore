@@ -1,0 +1,9 @@
+node_modules/
+server/dist/
+server/data/
+data/
+*.log
+.DS_Store
+.git/
+.gitignore
+.dockerignore

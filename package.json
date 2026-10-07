@@ -1,0 +1,26 @@
+{
+  "name": "bloghao-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "博客号 BlogHao 演示体验站（自托管 Docker 发行版）：DEMO_MODE 自动播种 + 定时重置，仅供测试体验，数据随时清空",
+  "scripts": {
+    "build": "esbuild server/server.ts --bundle --platform=node --format=esm --outfile=server/dist/server.js --loader:.css=text --loader:.sql=text --log-level=warning",
+    "start": "node server/dist/server.js",
+    "dev": "npm run build && npm run start",
+    "typecheck": "tsc --noEmit",
+    "smoke": "bash server/smoke.sh"
+  },
+  "dependencies": {
+    "hono": "^4.9.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261001.1",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
