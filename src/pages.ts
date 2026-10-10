@@ -35,14 +35,17 @@ import {
   archiveGroups,
   commentsHtml,
   HOME_SORTS,
+  isEn,
   memberAuthHtml,
   memberCardHtml,
   page,
+  plural,
   rankListHtml,
   siteBase,
   siteMode,
   toHomePost,
   stripCoverDuplicate,
+  tr,
   type CategoryLink,
   type NavPage,
   type RankEntryView,
@@ -73,6 +76,9 @@ function baseHeaders(c: C) {
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('X-Frame-Options', 'SAMEORIGIN')
+  // https 上启用 HSTS（http 上浏览器忽略，本地开发不受影响）；浏览器特性收敛到无
+  c.header('Strict-Transport-Security', 'max-age=31536000')
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
 }
 
 // 浏览量去重：同一 IP 对同一篇文章 1 小时内只计 1 次（进程内缓存，尽力而为），
@@ -125,30 +131,33 @@ async function navPages(c: C): Promise<NavPage[]> {
 
 /** 主题 page() 的运行时兜底：第三方主题未实现第 8 个渲染函数时渲染通用版（正文壳 + 返回首页） */
 function themePageHtml(theme: ReturnType<typeof getTheme>, d: Parameters<typeof theme.page>[0]): string {
+  const en = isEn(d.settings)
   if (typeof theme.page === 'function') return theme.page(d)
   return `<div style="max-width:760px;margin:0 auto;padding:32px 20px 60px;">
   <h1 style="margin-bottom:18px;">${esc(d.title)}</h1>
   <div class="rich">${d.contentHtml}</div>
-  <p style="margin-top:32px;"><a href="/">← 返回首页</a></p>
+  <p style="margin-top:32px;"><a href="/">← ${en ? 'Back to Home' : '返回首页'}</a></p>
 </div>`
 }
 
 /** 主题 member() 的运行时兜底：第三方主题未实现时渲染通用版（会员卡/表单 + 返回首页） */
 function themeMemberHtml(theme: ReturnType<typeof getTheme>, d: MemberData): string {
+  const en = isEn(d.settings)
   if (typeof theme.member === 'function') return theme.member(d)
   return `<div style="max-width:520px;margin:0 auto;padding:32px 20px 60px;">
-  ${d.member ? memberCardHtml(d.member) : memberAuthHtml()}
-  <p style="margin-top:32px;"><a href="/">← 返回首页</a></p>
+  ${d.member ? memberCardHtml(d.member, en) : memberAuthHtml(en)}
+  <p style="margin-top:32px;"><a href="/">← ${en ? 'Back to Home' : '返回首页'}</a></p>
 </div>`
 }
 
 /** 主题 rank() 的运行时兜底：第三方主题未实现时渲染通用版（榜单列表 + 返回首页） */
 function themeRankHtml(theme: ReturnType<typeof getTheme>, d: RankData): string {
+  const en = isEn(d.settings)
   if (typeof theme.rank === 'function') return theme.rank(d)
   return `<div style="max-width:640px;margin:0 auto;padding:32px 20px 60px;">
-  <h1 style="margin-bottom:18px;">排行榜</h1>
-  ${rankListHtml(d.entries) || '<p>还没有会员上榜。</p>'}
-  <p style="margin-top:32px;"><a href="/">← 返回首页</a></p>
+  <h1 style="margin-bottom:18px;">${tr(en, '排行榜')}</h1>
+  ${rankListHtml(d.entries, en) || (en ? '<p>No members on the board yet.</p>' : '<p>还没有会员上榜。</p>')}
+  <p style="margin-top:32px;"><a href="/">← ${en ? 'Back to Home' : '返回首页'}</a></p>
 </div>`
 }
 
@@ -329,32 +338,48 @@ async function renderList(
   let notice = ''
   let emptyText = ''
   let title = ''
+  const en = isEn(settings)
   if (opts.mode === 'search') {
     // 搜索框已移到刊头标签上方，这里只展示结果信息；文章封顶 50 条、微博封顶 20 条，超限要说清楚
     if (q) {
-      const weiboText = searchWeiboView ? `、${searchWeiboView.total} 条微博` : ''
+      const weiboText = searchWeiboView
+        ? en
+          ? ` and ${searchWeiboView.total} ${plural(searchWeiboView.total, 'note', 'notes')}`
+          : `、${searchWeiboView.total} 条微博`
+        : ''
       const caps: string[] = []
-      if (r.total > 50) caps.push('文章仅显示前 50 条')
-      if (searchWeiboView && searchWeiboView.total > 20) caps.push('微博仅显示前 20 条')
-      const capText = caps.length ? `，${caps.join('、')}，试试更具体的关键词` : ''
-      notice = `<p class="search-meta">找到 ${r.total} 篇文章${weiboText}与「${esc(q)}」相关${capText}</p>`
-      emptyText =
-        r.total === 0
+      if (r.total > 50) caps.push(en ? 'showing the first 50 posts' : '文章仅显示前 50 条')
+      if (searchWeiboView && searchWeiboView.total > 20) caps.push(en ? 'showing the first 20 notes' : '微博仅显示前 20 条')
+      const capText = caps.length
+        ? en
+          ? ` (${caps.join(', ')} — try more specific keywords)`
+          : `，${caps.join('、')}，试试更具体的关键词`
+        : ''
+      notice = en
+        ? `<p class="search-meta">Found ${r.total} ${plural(r.total, 'post', 'posts')}${weiboText} matching “${esc(q)}”${capText}</p>`
+        : `<p class="search-meta">找到 ${r.total} 篇文章${weiboText}与「${esc(q)}」相关${capText}</p>`
+      emptyText = r.total
+        ? ''
+        : en
           ? searchWeiboView
+            ? `No posts found for “${esc(q)}” — try another keyword.`
+            : `No posts or notes found for “${esc(q)}” — try another keyword.`
+          : searchWeiboView
             ? `没有找到与「${esc(q)}」相关的文章，换个关键词试试。`
             : `没有找到与「${esc(q)}」相关的文章或微博，换个关键词试试。`
-          : ''
     } else {
-      notice = '<p class="search-meta">输入关键词，回车或点「搜索」</p>'
+      notice = `<p class="search-meta">${en ? 'Type a keyword and press Enter, or click Search' : '输入关键词，回车或点「搜索」'}</p>`
       emptyText = ''
     }
-    title = q ? `搜索：${q}` : '搜索'
+    title = q ? (en ? `Search: ${q}` : `搜索：${q}`) : tr(en, '搜索')
   } else if (opts.mode === 'category' && category) {
-    notice = `<p class="search-meta">分类「${esc(category.name)}」下共 ${r.total} 篇文章</p>`
-    emptyText = '这个分类下还没有文章。'
-    title = `分类：${category.name}`
+    notice = en
+      ? `<p class="search-meta">${r.total} ${plural(r.total, 'post', 'posts')} in category “${esc(category.name)}”</p>`
+      : `<p class="search-meta">分类「${esc(category.name)}」下共 ${r.total} 篇文章</p>`
+    emptyText = en ? 'No posts in this category yet.' : '这个分类下还没有文章。'
+    title = en ? `Category: ${category.name}` : `分类：${category.name}`
   } else if (tag) {
-    title = `${tag} 主题的文章`
+    title = en ? `Posts tagged “${tag}”` : `${tag} 主题的文章`
   }
 
   const html = theme.home({
@@ -457,6 +482,7 @@ export async function renderPost(c: C): Promise<Response> {
   // 密码墙时正文一个字节都不出：连 sanitize 都不做，fullHtml 留空（teaser 分支不会被走到）。
   // 渲染路径传 origin：非白名单外链包 /go 中间页（存库/RSS/导出不传，保持原始 URL）
   const fullHtml = pwLocked ? '' : replaceEmoji(stripCoverDuplicate(sanitizeHtml(row.content, { origin: url.origin }), row.cover))
+  const en = isEn(settings)
   const commentsBlock = commentsHtml({
     comments,
     slug: row.slug,
@@ -467,7 +493,10 @@ export async function renderPost(c: C): Promise<Response> {
     adminName: user ? (user.display_name || user.username || '').slice(0, 24) : undefined,
     memberName:
       !user && member ? (member.display_name || member.username || '').slice(0, 24) : undefined,
-    tip: settings.moderateComments === '1' && !user ? '提交后审核通过即展示' : undefined,
+    // 作者评论的头像位用站点头像（与微博卡同源），游客/会员评论不适用
+    adminAvatar: settings.avatarUrl || undefined,
+    tip: settings.moderateComments === '1' && !user ? tr(en, '提交后审核通过即展示') : undefined,
+    en,
   })
 
   const html = theme.post({
@@ -476,7 +505,7 @@ export async function renderPost(c: C): Promise<Response> {
       slug: row.slug,
       title: row.title,
       // 封面图与正文首图重复时渲染正文去掉首图，避免一图两现；密码墙出解锁表单，locked 只下发试读段
-      contentHtml: pwLocked ? passwordFormHtml(row.slug, { error: lockedError }) : locked ? teaserHtml(fullHtml) : fullHtml,
+      contentHtml: pwLocked ? passwordFormHtml(row.slug, { error: lockedError, en }) : locked ? teaserHtml(fullHtml) : fullHtml,
       summary: row.summary,
       cover: row.cover,
       tags: parseTags(row),
@@ -499,7 +528,7 @@ export async function renderPost(c: C): Promise<Response> {
   // 分享卡图优先：编辑器生成的 OG 卡图 > 封面图；密码墙时不从正文提取（正文零参与）
   const ogImage = pwLocked ? row.cover || undefined : extractOgImage(sanitizeHtml(row.content)) || row.cover || undefined
   // 密码墙的描述走 protectedDescription：作者自填摘要照常公开，绝不把 excerpt(row.content) 泄进 meta / JSON-LD
-  const metaDescription = pwLocked ? protectedDescription(row.summary) : row.summary || excerpt(row.content, 120)
+  const metaDescription = pwLocked ? protectedDescription(row.summary, en) : row.summary || excerpt(row.content, 120)
   const base = siteBase(settings, url.origin)
   // 结构化数据（roadmap A3）：schema.org BlogPosting，与 og:image / canonical 同口径；草稿预览（noindex）不出
   const jsonLd = isPreview
@@ -539,7 +568,11 @@ export async function renderAbout(c: C): Promise<Response> {
   baseHeaders(c)
   const settings = await getSettings(c.env.DB)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const aboutRow = await getPage(c.env.DB, 'about')
+  const aboutDesc = en
+    ? `About ${tr(en, settings.siteName)} — the story behind this site`
+    : `关于 ${settings.siteName} 与这里的故事`
   if (aboutRow && aboutRow.status === 'published') {
     const [categories, tags, pages] = await Promise.all([navCategories(c), navTags(c), navPages(c)])
     const html = themePageHtml(theme, {
@@ -557,7 +590,7 @@ export async function renderAbout(c: C): Promise<Response> {
         settings,
         css: theme.css,
         title: aboutRow.title,
-        description: `关于 ${settings.siteName} 与这里的故事`,
+        description: aboutDesc,
         path: '/about',
         origin: new URL(c.req.url).origin,
         body: html,
@@ -567,7 +600,11 @@ export async function renderAbout(c: C): Promise<Response> {
   const [categories, tags, pages] = await Promise.all([navCategories(c), navTags(c), navPages(c)])
   const html = theme.about({
     settings,
-    contentHtml: replaceEmoji(sanitizeHtml(settings.about || '<p>作者很懒，什么都没写。</p>', { origin: new URL(c.req.url).origin })),
+    contentHtml: replaceEmoji(
+      sanitizeHtml(settings.about || (en ? '<p>The author has not written anything yet.</p>' : '<p>作者很懒，什么都没写。</p>'), {
+        origin: new URL(c.req.url).origin,
+      })
+    ),
     categories,
     tags,
     pages,
@@ -578,8 +615,8 @@ export async function renderAbout(c: C): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: '关于我',
-      description: `关于 ${settings.siteName} 与这里的故事`,
+      title: tr(en, '关于我'),
+      description: aboutDesc,
       path: '/about',
       origin: new URL(c.req.url).origin,
       body: html,
@@ -625,6 +662,7 @@ export async function renderArchive(c: C): Promise<Response> {
   baseHeaders(c)
   const settings = await getSettings(c.env.DB)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const [rows, categories, tags, pages] = await Promise.all([
     listAllPublishedArchives(c.env.DB),
     navCategories(c),
@@ -644,8 +682,10 @@ export async function renderArchive(c: C): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: '文章归档',
-      description: `${settings.siteName}的全部文章归档，共 ${rows.length} 篇，按年份回顾每一个阶段的写作`,
+      title: tr(en, '归档'),
+      description: en
+        ? `Every post on ${tr(en, settings.siteName)}, ${rows.length} ${plural(rows.length, 'post', 'posts')} in all, year by year.`
+        : `${settings.siteName}的全部文章归档，共 ${rows.length} 篇，按年份回顾每一个阶段的写作`,
       path: '/archives',
       origin: new URL(c.req.url).origin,
       body: html,
@@ -658,6 +698,7 @@ export async function renderGuestbook(c: C): Promise<Response> {
   baseHeaders(c)
   const settings = await getSettings(c.env.DB)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const [comments, categories, tags, pages, user, gbCount, member] = await Promise.all([
     listGuestbookComments(c.env.DB),
     navCategories(c),
@@ -683,10 +724,12 @@ export async function renderGuestbook(c: C): Promise<Response> {
       // 管理员登录：表单免填昵称，以作者身份发言；会员登录次之，以会员身份发言
       adminName: user ? (user.display_name || user.username || '').slice(0, 24) : undefined,
       memberName: !user && member ? (member.display_name || member.username || '').slice(0, 24) : undefined,
-      tip: settings.moderateComments === '1' && !user ? '提交后审核通过即展示' : undefined,
+      adminAvatar: settings.avatarUrl || undefined,
+      tip: settings.moderateComments === '1' && !user ? tr(en, '提交后审核通过即展示') : undefined,
       guestbook: true,
       // 页头已有「留言板」大标题，留言区标题换成「全部留言」避免重复
-      title: '全部留言',
+      title: tr(en, '全部留言'),
+      en,
     }),
   })
   c.header('Cache-Control', 'no-cache')
@@ -694,8 +737,10 @@ export async function renderGuestbook(c: C): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: '留言板',
-      description: `${settings.siteName}的留言板，想对作者说点什么，就在这里写下来`,
+      title: tr(en, '留言板'),
+      description: en
+        ? `The guestbook of ${tr(en, settings.siteName)} — leave a message for the author`
+        : `${settings.siteName}的留言板，想对作者说点什么，就在这里写下来`,
       path: '/guestbook',
       origin: new URL(c.req.url).origin,
       body: html,
@@ -712,6 +757,7 @@ export async function renderWeibo(c: C, asHome = false): Promise<Response> {
   const settings = await getSettings(c.env.DB)
   if (siteMode(settings) === 'blog') return c.redirect('/', 302)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const url = new URL(c.req.url)
   const perPage = 15
   const topic = (url.searchParams.get('topic') || '').trim().slice(0, 24)
@@ -781,8 +827,12 @@ export async function renderWeibo(c: C, asHome = false): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: asHome ? '' : '微博',
-      description: asHome ? settings.siteDescription : `${settings.siteName}的随手记`,
+      title: asHome ? '' : tr(en, '微博'),
+      description: asHome
+        ? tr(en, settings.siteDescription)
+        : en
+          ? `Short notes and daily bits by ${tr(en, settings.siteName)}`
+          : `${settings.siteName}的随手记`,
       path: asHome ? '/' : '/weibo',
       origin: url.origin,
       body: html,
@@ -795,6 +845,7 @@ export async function renderLinks(c: C): Promise<Response> {
   baseHeaders(c)
   const settings = await getSettings(c.env.DB)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const [links, categories, tags, pages] = await Promise.all([
     listFriendLinks(c.env.DB, { status: 'approved' }),
     navCategories(c),
@@ -814,8 +865,10 @@ export async function renderLinks(c: C): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: '友情链接',
-      description: `${settings.siteName}的朋友站点，也欢迎申请收录`,
+      title: tr(en, '友情链接'),
+      description: en
+        ? `Friend sites of ${tr(en, settings.siteName)} — submissions welcome`
+        : `${settings.siteName}的朋友站点，也欢迎申请收录`,
       path: '/links',
       origin: new URL(c.req.url).origin,
       body: html,
@@ -836,6 +889,7 @@ function toRankEntry(m: RankMemberRow, rank: number, sessionId: number | null): 
     nickname: (m.display_name || m.username).slice(0, 24),
     tier: m.tier,
     points: m.points,
+    avatarUrl: m.avatar || undefined,
     isMe: sessionId !== null && sessionId === m.id,
   }
 }
@@ -853,6 +907,7 @@ export async function renderMember(c: C): Promise<Response> {
   const settings = await getSettings(c.env.DB)
   if (!membersEnabled(settings)) return renderNotFound(c)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const [categories, tags, pages, session] = await Promise.all([
     navCategories(c),
     navTags(c),
@@ -870,6 +925,7 @@ export async function renderMember(c: C): Promise<Response> {
         points: row.points,
         email: row.email,
         avatarUrl: row.avatar || undefined,
+        qq: row.qq,
         createdAt: row.created_at,
         displayNameChangedAt: row.display_name_changed_at,
       }
@@ -881,8 +937,10 @@ export async function renderMember(c: C): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: '会员中心',
-      description: `${settings.siteName}的会员中心，登录注册、攒积分、解锁会员专属内容`,
+      title: en ? 'Membership' : '会员中心',
+      description: en
+        ? `Membership of ${tr(en, settings.siteName)} — log in, earn points, unlock members-only posts`
+        : `${settings.siteName}的会员中心，登录注册、攒积分、解锁会员专属内容`,
       path: '/member',
       origin: new URL(c.req.url).origin,
       body: html,
@@ -896,6 +954,7 @@ export async function renderRank(c: C): Promise<Response> {
   const settings = await getSettings(c.env.DB)
   if (!membersEnabled(settings)) return renderNotFound(c)
   const theme = getTheme(settings.theme)
+  const en = isEn(settings)
   const [categories, tags, pages, session] = await Promise.all([
     navCategories(c),
     navTags(c),
@@ -918,8 +977,10 @@ export async function renderRank(c: C): Promise<Response> {
     page(pageOpts(c, {
       settings,
       css: theme.css,
-      title: '排行榜',
-      description: `${settings.siteName}的会员积分排行榜，留言、常回来，积分自然涨`,
+      title: tr(en, '排行榜'),
+      description: en
+        ? `The points leaderboard of ${tr(en, settings.siteName)} — comment and come back often to climb`
+        : `${settings.siteName}的会员积分排行榜，留言、常回来，积分自然涨`,
       path: '/rank',
       origin: new URL(c.req.url).origin,
       body: html,
@@ -930,6 +991,7 @@ export async function renderRank(c: C): Promise<Response> {
 export async function renderNotFound(c: C): Promise<Response> {
   baseHeaders(c)
   const settings = await getSettings(c.env.DB)
+  const en = isEn(settings)
   // hasOwnProperty 防原型链属性（constructor 等）被当成主题 id
   const t = Object.prototype.hasOwnProperty.call(THEMES, settings.theme) ? THEMES[settings.theme] : undefined
   const themeCss = t ? t.css : getTheme('wechat').css
@@ -939,14 +1001,14 @@ export async function renderNotFound(c: C): Promise<Response> {
       settings,
       css: themeCss,
       title: '404',
-      description: '页面不存在',
+      description: en ? 'Page not found' : '页面不存在',
       path: '/404',
       origin: new URL(c.req.url).origin,
       noindex: true,
       body: `<div style="max-width:480px;margin:18vh auto 0;padding:0 24px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;">
   <div style="font-size:64px;font-weight:700;letter-spacing:.05em;">404</div>
-  <p style="color:#999;margin:12px 0 28px;">这一页飘走了，回首页看看吧。</p>
-  <a href="/" style="display:inline-block;padding:10px 28px;border-radius:999px;background:#b23a29;color:#fff;text-decoration:none;font-size:14px;">回首页</a>
+  <p style="color:#999;margin:12px 0 28px;">${en ? 'This page wandered off. Head back home?' : '这一页飘走了，回首页看看吧。'}</p>
+  <a href="/" style="display:inline-block;padding:10px 28px;border-radius:999px;background:#b23a29;color:#fff;text-decoration:none;font-size:14px;">${en ? 'Back to Home' : '回首页'}</a>
 </div>`,
     })),
     404

@@ -59,6 +59,12 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   tgChannelChatId: '',
   commentWebhookUrl: '',
   footerHtmlCode: '',
+  // 服务端插件「微博同步 Buffer」：Buffer API Key 与目标渠道 ID（X 等，设置页可一键拉取，src/hooks.ts）
+  bufferAccessToken: '',
+  bufferChannelId: '',
+  // 服务端插件「广场同步」：广场 hub 地址（默认官方 https://plaza.bloghao.com）与站点注册 token（src/hooks.ts，docs/PLAZA.md）
+  plazaEndpoint: 'https://plaza.bloghao.com',
+  plazaToken: '',
   // 一键灰度（哀悼/纪念模式）：所有公开页 CSS 去色，见 src/render.ts page()
   siteGrayscale: '0',
   // 一键闭站：公开页面与公开 API 全部 503，仅后台/登录/图床可用（src/index.ts 闭站中间件）
@@ -69,6 +75,13 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   membersEnabled: '0',
   // 排行榜展示条数上限（/rank 页与首页挂件共用，1-50）
   rankTopN: '10',
+  // 英文测试版（内部代号 English 0.1，见 src/i18n.ts）：edition 是后台可切的语言版本；
+  // editionEnStatus 是运行状态（active 正常 / fallback 渲染异常已自动回退中文，重新开启时重置）
+  edition: 'zh',
+  editionEnStatus: 'active',
+  // 英文版最近一次异常的错误摘要与发生时间（后台横幅展示，仅记录，渲染层不读）
+  editionEnError: '',
+  editionEnAt: '',
 }
 
 export async function getSettings(db: D1Database): Promise<SettingsMap> {
@@ -208,10 +221,11 @@ export async function uniqueSlug(db: D1Database, base: string, excludeId?: numbe
 }
 
 export async function listApprovedComments(db: D1Database, postId: number): Promise<CommentRow[]> {
-  // LEFT JOIN members 带会员徽标数据（member_id = 0 的游客行为 NULL），渲染层按契约 DEVPLAN 附录 A 消费
+  // LEFT JOIN members 带会员徽标数据（member_id = 0 的游客行为 NULL），渲染层按契约 DEVPLAN 附录 A 消费；
+  // member_avatar 仅供评论头像位展示（QQ 号本体永不出参，头像已站内转存）
   const { results } = await db
     .prepare(
-      'SELECT c.*, m.display_name AS member_name, m.tier AS member_tier FROM comments c LEFT JOIN members m ON m.id = c.member_id WHERE c.post_id = ? AND c.status = ? ORDER BY c.created_at ASC LIMIT 500'
+      'SELECT c.*, m.display_name AS member_name, m.tier AS member_tier, m.avatar AS member_avatar FROM comments c LEFT JOIN members m ON m.id = c.member_id WHERE c.post_id = ? AND c.status = ? ORDER BY c.created_at ASC LIMIT 500'
     )
     .bind(postId, 'approved')
     .all<CommentRow>()
@@ -222,7 +236,7 @@ export async function listApprovedComments(db: D1Database, postId: number): Prom
 export async function listGuestbookComments(db: D1Database): Promise<CommentRow[]> {
   const { results } = await db
     .prepare(
-      "SELECT c.*, m.display_name AS member_name, m.tier AS member_tier FROM comments c LEFT JOIN members m ON m.id = c.member_id WHERE c.post_id = 0 AND c.weibo_id = 0 AND c.status = 'approved' ORDER BY c.created_at ASC LIMIT 500"
+      "SELECT c.*, m.display_name AS member_name, m.tier AS member_tier, m.avatar AS member_avatar FROM comments c LEFT JOIN members m ON m.id = c.member_id WHERE c.post_id = 0 AND c.weibo_id = 0 AND c.status = 'approved' ORDER BY c.created_at ASC LIMIT 500"
     )
     .all<CommentRow>()
   return results ?? []
@@ -374,10 +388,12 @@ export async function relatedPosts(db: D1Database, post: PostRow, limit = 3): Pr
 
 export async function listCategories(db: D1Database, opts: { withCount?: boolean } = {}): Promise<(CategoryRow & { post_count?: number })[]> {
   if (opts.withCount) {
+    // 计数滤掉回收站文章（含草稿是故意的：后台口径=已归类总量）；公开分类页不带计数，不受影响
     const { results } = await db
       .prepare(
         `SELECT c.*, COUNT(pc.post_id) AS post_count
          FROM categories c LEFT JOIN post_categories pc ON pc.category_id = c.id
+           AND pc.post_id IN (SELECT id FROM posts WHERE deleted_at IS NULL)
          GROUP BY c.id ORDER BY c.sort ASC, c.id ASC`
       )
       .all<CategoryRow & { post_count: number }>()
@@ -695,6 +711,11 @@ const SCHEMA_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'posts', column: 'password_hash', ddl: "ALTER TABLE posts ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''" },
   // 会员昵称 30 天一次修改窗口（src/utils.ts nicknameCooldown）：NULL = 从未改过，首次修改不受限
   { table: 'members', column: 'display_name_changed_at', ddl: 'ALTER TABLE members ADD COLUMN display_name_changed_at INTEGER' },
+  // 评论头像（C2）：绑定的 QQ 号，仅头像抓取记账位——任何公开出参不携带（头像走站内转存，见 members.avatar）
+  { table: 'members', column: 'qq', ddl: "ALTER TABLE members ADD COLUMN qq TEXT NOT NULL DEFAULT ''" },
+  // 游客 QQ 头像（C2 扩展）：游客选填的 qq（仅抓取记账位，公开出参不携带）+ 服务端抓取转存的站内头像地址
+  { table: 'comments', column: 'qq', ddl: "ALTER TABLE comments ADD COLUMN qq TEXT NOT NULL DEFAULT ''" },
+  { table: 'comments', column: 'avatar', ddl: "ALTER TABLE comments ADD COLUMN avatar TEXT NOT NULL DEFAULT ''" },
 ]
 const SCHEMA_TABLES = [
   // 会员体系（2026-10-07 起，见 docs/DEVPLAN-2026-10-07.md 附录 A 契约）：
@@ -707,6 +728,7 @@ const SCHEMA_TABLES = [
     email         TEXT    NOT NULL DEFAULT '',
     display_name  TEXT    NOT NULL DEFAULT '',
     avatar        TEXT    NOT NULL DEFAULT '',
+    qq            TEXT    NOT NULL DEFAULT '',
     tier          TEXT    NOT NULL DEFAULT 'normal',
     points        INTEGER NOT NULL DEFAULT 0,
     status        TEXT    NOT NULL DEFAULT 'active',
@@ -821,8 +843,18 @@ const SCHEMA_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_members_points ON members (points DESC)',
   'CREATE INDEX IF NOT EXISTS idx_member_sessions_expiry ON member_sessions (expires_at)',
   'CREATE INDEX IF NOT EXISTS idx_points_log_member ON member_points_log (member_id, created_at)',
+  // 记分幂等的数据库强制：评论 ref_id=评论 id、每日登录 ref_id=北京日序号，并发重复记账由唯一索引拦下
+  // （points.ts awardPoints 捕获 UNIQUE 冲突视为已记过；ref_id=0 的 adminAdjust/老 dailyLogin 行不进索引）
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_points_log_dedup ON member_points_log (member_id, reason, ref_id) WHERE ref_id > 0',
+  'CREATE INDEX IF NOT EXISTS idx_uploads_created ON uploads (created_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_friend_links_status ON friend_links (status, sort, id)',
   'CREATE INDEX IF NOT EXISTS idx_visit_day ON visit_log (day, ts)',
+  // 滚动清理 DELETE WHERE ts < ? 走前导索引（visit_log 是量最大的日志表；与 schema.sql 同步登记）
+  'CREATE INDEX IF NOT EXISTS idx_visit_ts ON visit_log (ts)',
+  // 回收站软删行极少：部分索引只收已删行，trash 面查询与 30 天到期清理免全表扫
+  'CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts (deleted_at) WHERE deleted_at IS NOT NULL',
+  'CREATE INDEX IF NOT EXISTS idx_weibo_deleted ON weibo (deleted_at) WHERE deleted_at IS NOT NULL',
+  'CREATE INDEX IF NOT EXISTS idx_pages_deleted ON pages (deleted_at) WHERE deleted_at IS NOT NULL',
 ]
 
 async function tableColumns(db: D1Database, table: string): Promise<Set<string>> {
@@ -883,20 +915,25 @@ export async function ensureSchema(db: D1Database): Promise<void> {
   }
   // 「关于我」→ 页面系统一次性迁移：settings 记账位防重复播种（页面被删后也不会复活）。
   // 老站升级把 settings.about 播成 slug='about' 的页面；新站首装播种默认文案，两者同一条路径。
+  // OR IGNORE + 吞冲突：部署后并发 isolate 会同时读到记账位缺失，输家撞 slug UNIQUE 不能打瘫首个请求（同 ftsSeeded 块口径）。
   const seeded = await db.prepare("SELECT value FROM settings WHERE key = 'pagesSeeded'").first<{ value: string }>()
   if (!seeded) {
     const about = await db.prepare("SELECT value FROM settings WHERE key = 'about'").first<{ value: string }>()
     const now = Date.now()
-    await db.batch([
-      db
-        .prepare(
-          "INSERT INTO pages (title, slug, content, status, show_in_nav, sort, created_at, updated_at) VALUES ('关于我', 'about', ?, 'published', 1, 90, ?, ?)"
-        )
-        .bind(about?.value || DEFAULT_SETTINGS.about, now, now),
-      db
-        .prepare("INSERT INTO settings (key, value) VALUES ('pagesSeeded', '1') ON CONFLICT(key) DO UPDATE SET value = '1'")
-        .bind(),
-    ])
+    try {
+      await db.batch([
+        db
+          .prepare(
+            "INSERT OR IGNORE INTO pages (title, slug, content, status, show_in_nav, sort, created_at, updated_at) VALUES ('关于我', 'about', ?, 'published', 1, 90, ?, ?)"
+          )
+          .bind(about?.value || DEFAULT_SETTINGS.about, now, now),
+        db
+          .prepare("INSERT INTO settings (key, value) VALUES ('pagesSeeded', '1') ON CONFLICT(key) DO UPDATE SET value = '1'")
+          .bind(),
+      ])
+    } catch {
+      /* 并发 isolate 已处理：不记账也无碍，下次冷启动重试 */
+    }
   }
 }
 
@@ -964,6 +1001,15 @@ export async function updateMemberNickname(db: D1Database, id: number, displayNa
     .bind(displayName, now, now, id, now - NICKNAME_CHANGE_COOLDOWN_MS)
     .run()
   return (r.meta.changes ?? 0) > 0
+}
+
+/** 绑定 QQ 号并回写头像（评论头像 C2）：avatar 传 null = 只存 qq 不动头像（qlogo 抓取失败容忍，
+ *  会员中心「重试头像」用同一 qq 重跑本函数补抓）；qq/avatar 都是本人提交或站内转存的值，无公开面 */
+export async function updateMemberQQ(db: D1Database, id: number, qq: string, avatar: string | null, now: number): Promise<void> {
+  await db
+    .prepare('UPDATE members SET qq = ?, updated_at = ?, avatar = COALESCE(?, avatar) WHERE id = ?')
+    .bind(qq, now, avatar, id)
+    .run()
 }
 
 /** 后台会员列表：q 模糊匹配用户名/邮箱（likePattern 同口径转义），20 条/页，新会员在前 */

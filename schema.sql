@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
+  -- token 存 SHA-256（auth.ts tokenHash）：库里没有可重放的明文会话 token
   token      TEXT    PRIMARY KEY,
   user_id    INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS members (
   email         TEXT    NOT NULL DEFAULT '',          -- 可选；邮件服务（B1）落地后启用验证与找回
   display_name  TEXT    NOT NULL DEFAULT '',          -- 前台展示名，空 = 用 username
   avatar        TEXT    NOT NULL DEFAULT '',          -- 头像地址（站内 /images/ 或外链），空 = 首字图标
+  qq            TEXT    NOT NULL DEFAULT '',          -- 绑定的 QQ 号（仅头像抓取记账位，任何公开出参不携带）
   tier          TEXT    NOT NULL DEFAULT 'normal',    -- normal | coffee | top（档位与 min_tier 语义见 docs/DEVPLAN-2026-10-07.md 附录 A）
   points        INTEGER NOT NULL DEFAULT 0,           -- 当前积分余额（冗余，明细在 member_points_log）
   status        TEXT    NOT NULL DEFAULT 'active',    -- active | banned（封禁后禁登录与评论，历史评论保留）
@@ -41,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_members_points ON members (points DESC);
 
 -- 会员会话：独立于管理员 sessions（Cookie xw_member_session），独立 TTL 与清理，互不干扰
 CREATE TABLE IF NOT EXISTS member_sessions (
+  -- token 存 SHA-256（同 sessions）
   token      TEXT    PRIMARY KEY,
   member_id  INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
@@ -60,6 +63,8 @@ CREATE TABLE IF NOT EXISTS member_points_log (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_points_log_member ON member_points_log (member_id, created_at);
+-- 记分幂等（评论 ref_id=评论 id、每日登录 ref_id=北京日序号）；db.ts SCHEMA_INDEXES 有同款，两处同步
+CREATE UNIQUE INDEX IF NOT EXISTS idx_points_log_dedup ON member_points_log (member_id, reason, ref_id) WHERE ref_id > 0;
 
 CREATE TABLE IF NOT EXISTS posts (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +100,8 @@ CREATE TABLE IF NOT EXISTS comments (
   nickname   TEXT    NOT NULL,
   email      TEXT    NOT NULL DEFAULT '',
   website    TEXT    NOT NULL DEFAULT '',
+  qq         TEXT    NOT NULL DEFAULT '',          -- 游客选填的 QQ 号（评论头像 C2）：仅头像抓取记账位，任何公开出参不携带
+  avatar     TEXT    NOT NULL DEFAULT '',          -- 游客头像（服务端 qlogo 抓取后站内转存的 /images/ 地址），空 = 首字块
   content    TEXT    NOT NULL,
   status     TEXT    NOT NULL DEFAULT 'approved', -- approved | pending
   ip         TEXT    NOT NULL DEFAULT '',
@@ -161,6 +168,8 @@ CREATE TABLE IF NOT EXISTS uploads (
   created_at INTEGER NOT NULL,
   hash       TEXT    NOT NULL DEFAULT ''    -- 内容 SHA-256 指纹（媒体体检查重用，src/audit.ts）；missing = R2 里已丢失
 );
+-- 媒体库按 created_at 倒序分页；db.ts SCHEMA_INDEXES 有同款，两处同步
+CREATE INDEX IF NOT EXISTS idx_uploads_created ON uploads (created_at DESC);
 
 -- 友情链接：站长维护，访客也可申请收录（source=user，默认 pending 待审）
 CREATE TABLE IF NOT EXISTS friend_links (
@@ -225,3 +234,10 @@ CREATE TABLE IF NOT EXISTS visit_log (
   country TEXT    NOT NULL DEFAULT ''     -- CF-IPCountry 两字母码
 );
 CREATE INDEX IF NOT EXISTS idx_visit_day ON visit_log (day, ts);
+-- 滚动清理 DELETE WHERE ts < ? 走前导索引（visit_log 是量最大的日志表，全表扫不值）
+CREATE INDEX IF NOT EXISTS idx_visit_ts ON visit_log (ts);
+
+-- 回收站软删行极少：部分索引只收 deleted_at IS NOT NULL，trash 面查询与 30 天到期清理免全表扫
+CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts (deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_weibo_deleted ON weibo (deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_pages_deleted ON pages (deleted_at) WHERE deleted_at IS NOT NULL;

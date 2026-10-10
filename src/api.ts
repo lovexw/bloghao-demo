@@ -52,6 +52,7 @@ import {
   uniqueSlug,
   updateMemberAdmin,
   updateMemberNickname,
+  updateMemberQQ,
   weiboCommentCountMap,
   weiboImageList,
   weiboTopicList,
@@ -63,17 +64,19 @@ import { awardCommentPoints, awardPoints, normalizeMinTier } from './points'
 import { collectRoutes } from './collect'
 import { exportRoutes } from './export'
 import { adminExternalRoutes, externalRoutes, notifyAdminComment, telegramRoutes } from './external'
-import { fireCommentCreated, firePostPublished, listServerPlugins } from './hooks'
+import { fireCommentCreated, firePostPublished, fireWeiboPublished, listBufferChannels, listServerPlugins } from './hooks'
 import { SITE_MODE_VALUES, siteBase, toHomePost, type SiteMode } from './render'
 import { sanitizeHtml } from './sanitize'
 import { cleanupUnreferenced, backfillHashes, mergeDuplicate, runAudit } from './audit'
-import { imageExtOf, MAX_REMOTE_IMAGES, MAX_UPLOAD_BYTES, saveUpload, transferImage } from './store'
+import { imageExtOf, MAX_REMOTE_IMAGES, MAX_UPLOAD_BYTES, saveUpload, sniffImageExt, sniffUploadExt, transferImage } from './store'
 import { hashPostPassword } from './protect'
 import { listTrash, restorePostStatus, trashTable, type TrashTable } from './trash'
 import { classifyBrowser, classifyDevice, cleanPath, cleanRef, cleanTitle, cleanVid, getVisitStats, recordVisit } from './stats'
+import { fetchLinkMeta } from './linkmeta'
+import { BROWSER_UA, buildCardHtml, coverProxyHostOk, coverReferer, fetchDoubanDetail, probeRelay, resolveCardCover, sanitizeMediaItem, searchMedia, subjectIdFromUrl, validateRelay, type MediaItem } from './douban'
 import { THEMES } from './themes/registry'
 import type { CommentRow, Env, MemberRow, MemberTier, PostRow, SessionUser } from './types'
-import { clampInt, cleanDisabledPlugins, cleanNickname, cleanSlug, excerpt, extractWeiboTopics, fmtDateCN, isDemo, jsonItemLikePattern, nicknameCooldown, normalizeLinkUrl, slugify } from './utils'
+import { clampInt, cleanDisabledPlugins, cleanNickname, cleanSlug, excerpt, extractWeiboTopics, fmtDateCN, isDemo, isValidQQ, jsonItemLikePattern, nicknameCooldown, normalizeLinkUrl, slugify } from './utils'
 
 type AppEnv = { Bindings: Env; Variables: { user: SessionUser } }
 
@@ -193,6 +196,7 @@ function memberView(m: MemberRow, self = false) {
   if (self) {
     v.username = m.username
     v.email = m.email
+    v.qq = m.qq
     v.createdAt = m.created_at
     v.displayNameChangedAt = m.display_name_changed_at ?? null
   }
@@ -274,24 +278,70 @@ api.get('/member/me', async (c) => {
 
 /* 会员个人资料（/member 页会员卡，契约见 docs/DEVPLAN-2026-10-07.md）：改昵称（30 天一次）与改密码 */
 
+/** 抓取 QQ 头像并转存进站内图床，返回站内地址；失败返回 null（调用方容忍只存 qq 号，
+ *  会员中心「重试头像」重跑同一请求补抓）。q1 主端点、q2 备用镜像，s=140 档（100 略糊、
+ *  640 浪费流量）；只认文件魔数（同 collect 转存口径），落库统一走 saveUpload（EXIF 剥离同款兜底） */
+async function fetchQQAvatar(env: Env, qq: string): Promise<string | null> {
+  for (const host of ['q1.qlogo.cn', 'q2.qlogo.cn']) {
+    try {
+      const res = await fetch(`https://${host}/g?b=qq&nk=${encodeURIComponent(qq)}&s=140`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', Referer: 'https://q.qlogo.cn/' },
+        signal: AbortSignal.timeout(6_000),
+      })
+      if (!res.ok) continue
+      if (Number(res.headers.get('content-length') || 0) > 1024 * 1024) continue
+      const buf = await res.arrayBuffer()
+      if (buf.byteLength === 0 || buf.byteLength > 1024 * 1024) continue
+      const ext = sniffImageExt(buf)
+      if (!ext || ext === 'gif') continue // 头像只收 jpg/png/webp
+      return await saveUpload(env, buf, `image/${ext === 'jpg' ? 'jpeg' : ext}`, `qq-${qq}.${ext}`, ext)
+    } catch {
+      /* 单镜像失败换下一个，最终失败由调用方容忍 */
+    }
+  }
+  return null
+}
+
 api.post('/member/profile', async (c) => {
   const settings = await getSettings(c.env.DB)
   if (settings.membersEnabled !== '1') return jsonError('会员功能未开放', 404)
   const session = await getMemberUser(c.env.DB, c.req.raw)
   if (!session) return jsonError('请先登录', 401)
-  const body = await c.req.json<{ nickname?: string }>().catch(() => null)
-  const nickname = cleanNickname(body?.nickname)
-  if (!nickname) return jsonError('昵称不能为空')
-  const row = await getMemberById(c.env.DB, session.id)
-  if (!row) return jsonError('请先登录', 401)
-  const cd = nicknameCooldown(row.display_name_changed_at)
-  if (!cd.allowed) return jsonError(`昵称每 30 天只能修改一次，${fmtDateCN(cd.nextAt)}后可再改`, 403)
-  // 条件更新把窗口判定下沉进 SQL：并发双开同时过上面的前置检查时，只有一动能落库
+  const body = await c.req.json<{ nickname?: string; qq?: string }>().catch(() => null)
+  const hasNickname = !!body && typeof body.nickname === 'string'
+  const nickname = hasNickname ? cleanNickname(body?.nickname) : ''
+  // qq 只在显式携带时处理：带键即意图（绑定/重试头像），不带键不碰
+  const qq = body && typeof body.qq === 'string' ? body.qq.trim() : undefined
+  if (!hasNickname && qq === undefined) return jsonError('没有要修改的内容')
+  if (hasNickname && !nickname) return jsonError('昵称不能为空')
+  const res: Record<string, unknown> = { ok: true }
   const now = Date.now()
-  if (!(await updateMemberNickname(c.env.DB, session.id, nickname, now))) {
-    return jsonError(`昵称每 30 天只能修改一次，${fmtDateCN(nicknameCooldown(now).nextAt)}后可再改`, 403)
+
+  if (hasNickname) {
+    const row = await getMemberById(c.env.DB, session.id)
+    if (!row) return jsonError('请先登录', 401)
+    const cd = nicknameCooldown(row.display_name_changed_at)
+    if (!cd.allowed) return jsonError(`昵称每 30 天只能修改一次，${fmtDateCN(cd.nextAt)}后可再改`, 403)
+    // 条件更新把窗口判定下沉进 SQL：并发双开同时过上面的前置检查时，只有一动能落库
+    if (!(await updateMemberNickname(c.env.DB, session.id, nickname, now))) {
+      return jsonError(`昵称每 30 天只能修改一次，${fmtDateCN(nicknameCooldown(now).nextAt)}后可再改`, 403)
+    }
+    res.nickname = nickname
+    res.displayNameChangedAt = now
   }
-  return c.json({ ok: true, nickname, displayNameChangedAt: now })
+
+  if (qq !== undefined) {
+    // 评论头像（C2）：qq 号仅作头像抓取记账位，任何公开出参不携带；绑过再绑 = 幂等重试头像
+    if (!isValidQQ(qq)) return jsonError('QQ 号格式不对（5-11 位数字，不以 0 开头）')
+    if (!rateLimit(`qqbind:${session.id}`, 10, 60_000)) return jsonError('操作太频繁，请稍后再试', 429)
+    const avatarUrl = await fetchQQAvatar(c.env, qq)
+    await updateMemberQQ(c.env.DB, session.id, qq, avatarUrl, now)
+    res.qq = qq
+    if (avatarUrl) res.avatarUrl = avatarUrl
+    else res.avatarFailed = true
+  }
+
+  return c.json(res)
 })
 
 api.post('/member/password', async (c) => {
@@ -520,6 +570,8 @@ api.post('/admin/posts', async (c) => {
   const now = Date.now()
   // 访问密码：随创建一并写入（空 = 不加密）
   const passwordHash = p.password ? await hashPostPassword(p.password) : ''
+  // 自动摘要取净化后的正文（与 PUT 更新同口径：粘贴内容里的标签/实体不进导读面）
+  const clean = sanitizeHtml(p.content)
   const res = await c.env.DB.prepare(
     `INSERT INTO posts (slug, title, content, summary, cover, tags, status, pinned, author_id, published_at, publish_at, min_tier, password_hash, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -527,8 +579,10 @@ api.post('/admin/posts', async (c) => {
     .bind(
       slug,
       title,
-      sanitizeHtml(p.content),
-      p.summary || excerpt(p.content, 80),
+      clean,
+      // 密码文的自动摘要留空：summary 列是对外导读面（RSS description / meta / 公开列表），
+      // 不能拿加密正文截前 80 字泄出去；作者手填的摘要照常保留（作者主动公开的导读）
+      p.summary || (passwordHash ? '' : excerpt(clean, 80)),
       p.cover,
       JSON.stringify(p.tags),
       p.status,
@@ -550,11 +604,41 @@ api.post('/admin/posts', async (c) => {
   // 广播发布事件（服务端插件钩子，见 src/hooks.ts）：新建即发布也算跃迁
   if (p.status === 'published' && row) {
     c.executionCtx.waitUntil(
-      firePostPublished(c.env, { slug: row.slug, title: row.title, summary: row.summary, via: 'admin' })
+      firePostPublished(c.env, {
+        slug: row.slug,
+        title: row.title,
+        summary: row.summary,
+        via: 'admin',
+        // 加密/会员锁文标志：广场同步插件据此跳过（防泄漏清单同口径）
+        locked: !!row.password_hash || (!!row.min_tier && row.min_tier !== 'all'),
+      })
     )
   }
   const categoryId = row ? await getPostCategoryId(c.env.DB, row.id) : null
   return c.json({ ok: true, post: row ? { ...postAdminView(row), tagList: parseTags(row), categoryId } : null })
+})
+
+/** 站内文章选择器（编辑器「插入站内文章」）：轻出参——只给标题/slug/摘要/封面/时间，
+ *  无正文无口令；q 走 likePattern 模糊匹配标题（与后台列表搜索同口径） */
+api.get('/admin/posts/lookup', async (c) => {
+  const q = (c.req.query('q') || '').trim().slice(0, 50)
+  const page = clampInt(c.req.query('page'), 1, 1000, 1)
+  const r = await listPosts(c.env.DB, { status: 'published', q: q || undefined, page, limit: 8 })
+  return c.json({
+    items: r.items.map((p) => ({
+      id: p.id,
+      slug: p.slug,
+      title: p.title,
+      summary: (p.summary || '').slice(0, 80),
+      cover: p.cover || '',
+      published_at: p.published_at,
+      hasPassword: !!p.password_hash,
+      minTier: normalizeMinTier(p.min_tier),
+    })),
+    total: r.total,
+    page: r.page,
+    totalPages: r.totalPages,
+  })
 })
 
 api.get('/admin/posts/:id', async (c) => {
@@ -578,10 +662,13 @@ api.put('/admin/posts/:id', async (c) => {
   const title = p.has.title ? p.title || '无标题' : existing.title
   const slug = p.has.slug && p.slug && p.slug !== existing.slug ? await uniqueSlug(c.env.DB, p.slug, id) : existing.slug
   const content = p.has.content ? sanitizeHtml(p.content) : existing.content
-  const summary = p.has.summary ? p.summary || (p.status === 'published' ? excerpt(content, 80) : '') : existing.summary
+  // status 先解析（部分更新语义：缺键沿用库里状态），summary 兜底按解析后的状态算，别用 payload 默认值。
+  // 密码文的自动摘要同样留空（同 POST 创建口径）：summary 是公开导读面，加密正文不出前 80 字
+  const status = p.has.status ? p.status : existing.status
+  const willLock = p.has.password ? !!p.password : !!existing.password_hash
+  const summary = p.has.summary ? p.summary || (willLock ? '' : status === 'published' ? excerpt(content, 80) : '') : existing.summary
   const cover = p.has.cover ? p.cover : existing.cover
   const tags = p.has.tags ? JSON.stringify(p.tags) : existing.tags
-  const status = p.has.status ? p.status : existing.status
   const pinned = p.has.pinned ? p.pinned : existing.pinned
   const minTier = p.has.minTier ? p.minTier : normalizeMinTier(existing.min_tier)
   // 草稿也保留已有 published_at：采集插件会把原文发布时间写入草稿，
@@ -626,7 +713,14 @@ api.put('/admin/posts/:id', async (c) => {
   // 广播发布事件：只在草稿/定时 → 已发布的跃迁时触发，重复编辑已发布文章不重推
   if (status === 'published' && existing.status !== 'published' && row) {
     c.executionCtx.waitUntil(
-      firePostPublished(c.env, { slug: row.slug, title: row.title, summary: row.summary, via: 'admin' })
+      firePostPublished(c.env, {
+        slug: row.slug,
+        title: row.title,
+        summary: row.summary,
+        via: 'admin',
+        // 加密/会员锁文标志：广场同步插件据此跳过（防泄漏清单同口径）
+        locked: !!row.password_hash || (!!row.min_tier && row.min_tier !== 'all'),
+      })
     )
   }
   return c.json({ ok: true, post: row ? { ...postAdminView(row), tagList: parseTags(row), categoryId } : null })
@@ -715,6 +809,10 @@ api.post('/admin/weibo', async (c) => {
     .bind(p.content, JSON.stringify(p.images), JSON.stringify(p.topics), p.status, p.status === 'published' ? now : null, now, now)
     .run()
   const row = await getWeiboById(c.env.DB, Number(res.meta.last_row_id))
+  // 广播微博发布事件（服务端插件钩子，见 src/hooks.ts）：新建即发布才算
+  if (p.status === 'published' && row) {
+    c.executionCtx.waitUntil(fireWeiboPublished(c.env, { id: row.id, content: row.content, images: weiboImageList(row), via: 'admin' }))
+  }
   return c.json({ ok: true, weibo: row ? { ...row, imageList: weiboImageList(row), topicList: weiboTopicList(row) } : null })
 })
 
@@ -735,6 +833,10 @@ api.put('/admin/weibo/:id', async (c) => {
     .bind(p.content, JSON.stringify(p.images), JSON.stringify(p.topics), p.status, pinned, publishedAt, Date.now(), id)
     .run()
   const row = await getWeiboById(c.env.DB, id)
+  // 广播微博发布事件（服务端插件钩子，见 src/hooks.ts）：仅草稿 → 发布的跃迁，编辑已发布微博不触发
+  if (p.status === 'published' && row && existing.status !== 'published') {
+    c.executionCtx.waitUntil(fireWeiboPublished(c.env, { id: row.id, content: row.content, images: weiboImageList(row), via: 'draft' }))
+  }
   return c.json({ ok: true, weibo: row ? { ...row, imageList: weiboImageList(row), topicList: weiboTopicList(row) } : null })
 })
 
@@ -771,17 +873,24 @@ api.delete('/admin/weibo/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+/** 服务端插件「微博同步 Buffer」的渠道拉取：设置页一键填充渠道 ID（src/hooks.ts listBufferChannels） */
+api.post('/admin/buffer/channels', async (c) => {
+  // 演示站禁外发：Buffer 渠道拉取是出网请求，demo 下不存在（体验者填的 Key 不能打出去）
+  if (isDemo(c.env)) return jsonError('演示站不开放服务端插件外呼', 404)
+  const body = await c.req.json<{ token?: string }>().catch(() => null)
+  // token 缺省时用已保存的（打码占位符提交 = 保持原值，与 SECRET_SETTINGS 同口径）
+  const saved = (await getSettings(c.env.DB)).bufferAccessToken || ''
+  const token = (body?.token || '').trim()
+  const using = token || (saved && saved !== SECRET_MASK ? saved : '')
+  if (!using) return jsonError('先填写 Buffer API Key，再拉取渠道')
+  const r = await listBufferChannels(using)
+  if (!r.ok) return jsonError(r.error, 502)
+  return c.json({ ok: true, channels: r.channels })
+})
+
 /* ---------------- 友情链接管理 ---------------- */
-const LINK_ICON_MIMES: Record<string, string> = {
-  'image/x-icon': 'ico',
-  'image/vnd.microsoft.icon': 'ico',
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-}
 const LINK_ICON_MAX_BYTES = 300 * 1024
-const ICON_FETCH_UA = 'Mozilla/5.0 (compatible; BlogHaoBot/1.0; +https://github.com/lovexw/bloghao)'
+const ICON_FETCH_UA = 'Mozilla/5.0 (compatible; BlogHaoBot/1.0; +https://github.com/bloghao/bloghao)'
 
 /** 校验友链图标地址：只收站内 /images/ 与 http(s) 外链，防 javascript: 注入 */
 function normalizeLinkIcon(input: unknown): string {
@@ -812,12 +921,13 @@ async function storeLinkIcon(env: Env, iconUrl: string, host: string): Promise<s
       headers: { 'user-agent': ICON_FETCH_UA },
     })
     if (!res.ok) return ''
-    const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
-    // hasOwnProperty 挡原型链（同 upload 的 IMAGE_MIMES 口径）：继承属性 truthy 会穿透成非法扩展名
-    const ext = Object.prototype.hasOwnProperty.call(LINK_ICON_MIMES, mime) ? LINK_ICON_MIMES[mime] : ''
-    if (!ext) return ''
     const buf = await res.arrayBuffer()
     if (!buf.byteLength || buf.byteLength > LINK_ICON_MAX_BYTES) return ''
+    // 只认文件魔数、不信任源站 Content-Type（同 collect 转存口径）：favicon 常是 ICO（sniffImageExt 不认），单独判魔数
+    const h = new Uint8Array(buf, 0, Math.min(4, buf.byteLength))
+    const ext = h[0] === 0 && h[1] === 0 && h[2] === 1 && h[3] === 0 ? 'ico' : sniffImageExt(buf)
+    if (!ext) return ''
+    const mime = ext === 'ico' ? 'image/x-icon' : `image/${ext === 'jpg' ? 'jpeg' : ext}`
     const key = `u/fav/${host.replace(/[^a-z0-9.-]/gi, '')}.${ext}`
     await env.IMAGES.put(key, buf, {
       httpMetadata: { contentType: mime, cacheControl: 'public, max-age=604800' },
@@ -1209,9 +1319,9 @@ api.post('/admin/trash/purge', async (c) => {
 })
 
 api.get('/admin/tags', async (c) => {
-  // 文章里实际用到的标签（含草稿）+ 分类页预建的标签（count 为 0）
+  // 文章里实际用到的标签（含草稿，不含回收站）+ 分类页预建的标签（count 为 0）
   const [postsRes, extraRes] = await Promise.all([
-    c.env.DB.prepare('SELECT tags FROM posts LIMIT 2000').all<{ tags: string }>(),
+    c.env.DB.prepare('SELECT tags FROM posts WHERE deleted_at IS NULL LIMIT 2000').all<{ tags: string }>(),
     c.env.DB.prepare('SELECT name FROM tags').all<{ name: string }>(),
   ])
   const count = new Map<string, number>()
@@ -1264,13 +1374,20 @@ api.post('/admin/upload', async (c) => {
   if (!(file instanceof File)) return jsonError('缺少文件字段 file')
   const mime = file.type || 'application/octet-stream'
   // 白名单查表统一走 imageExtOf（内部 hasOwnProperty 挡原型链穿透）
-  const ext =
+  const declared =
     imageExtOf(mime) ??
     (Object.prototype.hasOwnProperty.call(VIDEO_MIMES, mime) ? VIDEO_MIMES[mime] : undefined)
-  if (!ext) return jsonError('仅支持 JPG / PNG / WebP / GIF 图片与 MP4 / WebM 视频')
+  if (!declared) return jsonError('仅支持 JPG / PNG / WebP / GIF 图片与 MP4 / WebM 视频')
   if (file.size > MAX_UPLOAD_BYTES) return jsonError('文件超过 25MB 限制')
-  const url = await saveUpload(c.env, await file.arrayBuffer(), mime, file.name, ext)
-  return c.json({ ok: true, url, key: url.slice('/images/'.length), mime, size: file.size })
+  const buf = await file.arrayBuffer()
+  // 类型只认文件魔数（与转存链路同口径）：声明成图片但内容是 HTML/SVG/其它的一律拒收；
+  // 魔数与声明不符时按魔数落库（mime 取识别出的真实类型）
+  const ext = sniffUploadExt(buf)
+  if (!ext) return jsonError('文件内容不是支持的格式（仅认文件魔数）')
+  const realMime =
+    ext === 'mp4' ? 'video/mp4' : ext === 'webm' ? 'video/webm' : ext === 'ico' ? 'image/x-icon' : `image/${ext === 'jpg' ? 'jpeg' : ext}`
+  const url = await saveUpload(c.env, buf, realMime, file.name, ext)
+  return c.json({ ok: true, url, key: url.slice('/images/'.length), mime: realMime, size: buf.byteLength })
 })
 
 api.get('/admin/uploads', async (c) => {
@@ -1347,7 +1464,10 @@ api.post('/admin/og-image', async (c) => {
   if (!(file instanceof File)) return jsonError('缺少文件字段 file')
   if (file.type !== 'image/png') return jsonError('OG 卡图仅支持 PNG')
   if (file.size > MAX_UPLOAD_BYTES) return jsonError('文件超过 25MB 限制')
-  const url = await saveUpload(c.env, await file.arrayBuffer(), 'image/png', 'og-card.png', 'png', 'og')
+  const buf = await file.arrayBuffer()
+  // 魔数复核（与上传同口径）：声明 PNG 但内容不是 PNG 的一律拒收
+  if (sniffUploadExt(buf) !== 'png') return jsonError('文件内容不是 PNG')
+  const url = await saveUpload(c.env, buf, 'image/png', 'og-card.png', 'png', 'og')
   return c.json({ ok: true, url, key: url.slice('/images/'.length) })
 })
 
@@ -1421,11 +1541,15 @@ api.put('/admin/comments/:id', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return jsonError('评论不存在', 404)
   const body = await c.req.json<{ status?: string }>().catch(() => null)
-  const status = body?.status === 'pending' ? 'pending' : 'approved'
+  // status 白名单：拼错值/空 body 不得隐式过审（同 theme/siteMode 枚举口径）
+  if (body?.status !== 'approved' && body?.status !== 'pending') return jsonError('status 只允许 approved / pending')
+  // 先查后改：目标不存在回 404（同 pin/restore 口径），顺带带出 member_id 供计分
+  const target = await c.env.DB.prepare('SELECT member_id FROM comments WHERE id = ?').bind(id).first<{ member_id: number | null }>()
+  if (!target) return jsonError('评论不存在', 404)
+  const status = body.status
   // 会员评论过审才计积分（awardCommentPoints 按 ref_id 去重，反复 通过↔待审 不重复记）
-  const target = await c.env.DB.prepare('SELECT member_id FROM comments WHERE id = ?').bind(id).first<{ member_id: number }>()
   await c.env.DB.prepare('UPDATE comments SET status = ? WHERE id = ?').bind(status, id).run()
-  if (status === 'approved' && target?.member_id) {
+  if (status === 'approved' && target.member_id) {
     c.executionCtx.waitUntil(awardCommentPoints(c.env.DB, target.member_id, id))
   }
   return c.json({ ok: true })
@@ -1442,7 +1566,7 @@ api.delete('/admin/comments/:id', async (c) => {
 /* ---------------- 设置 ---------------- */
 // 敏感项只写不读：GET 一律打码返回（明文只在生成 Token / 保存后不再回显）；
 // PUT 收到打码占位符视为「保持原值」，这样前端整表提交不会把占位符写进库
-const SECRET_SETTINGS = ['externalToken', 'telegramBotToken', 'telegramWebhookSecret']
+const SECRET_SETTINGS = ['externalToken', 'telegramBotToken', 'telegramWebhookSecret', 'bufferAccessToken', 'plazaToken']
 const SECRET_MASK = '••••••••'
 // 布尔开关统一收口：'1'/'true' → '1'，其余一律 '0'（新增布尔键加进表即可，别再抄判断分支）
 const BOOL_SETTINGS = [
@@ -1535,6 +1659,16 @@ api.put('/admin/settings', async (c) => {
       patch[key] = String(clampInt(v, 1, 50, 10))
       continue
     }
+    if (key === 'edition') {
+      // 英文测试版（English 0.1）开关：二值白名单；重新开启即重置回退状态与错误记录
+      patch[key] = v === 'en' ? 'en' : 'zh'
+      if (patch[key] === 'en') {
+        patch.editionEnStatus = 'active'
+        patch.editionEnError = ''
+        patch.editionEnAt = ''
+      }
+      continue
+    }
     patch[key] = v.slice(0, 500)
   }
   // 演示站不允许闭站：有人开了开关，整个重置周期内所有体验者都会看到 503
@@ -1593,6 +1727,126 @@ api.post('/admin/tools/md', async (c) => {
   // 与正文接口同口径按 UTF-8 字节计（length 是 UTF-16 码元数，全 emoji 输入会虚增 3-4 倍余量）
   if (new TextEncoder().encode(md).length > MAX_CONTENT_BYTES) return jsonError('内容过长')
   return c.json({ html: mdToHtml(md) })
+})
+
+/** 链接卡元数据抓取（编辑器「插入链接」卡片风格）：只抓 http(s) 公网页面，
+ *  抓不到/解析不到返回空字段，编辑器据已有字段组卡（title 缺失时用域名兜底）。
+ *  用户输入的 URL 按用户输入频控；fetch 本身限长限时（src/linkmeta.ts） */
+api.post('/admin/tools/linkmeta', async (c) => {
+  const body = await c.req.json<{ url?: string }>().catch(() => null)
+  const url = String(body?.url ?? '').trim().slice(0, 2048)
+  if (!url) return jsonError('请填写链接地址')
+  const ip = clientIp(c.req.raw)
+  if (!rateLimit(`linkmeta:${ip}`, 10, 60_000)) return jsonError('操作太频繁，请稍后再试', 429)
+  const meta = await fetchLinkMeta(url)
+  return c.json({ meta })
+})
+
+/** 书影音组卡用的中转基地址（转存失败时豆瓣封面退中转 /img 兜底）；配置不完整回 null */
+function validateRelayBase(relay: string, relayToken: string): string | null {
+  return validateRelay(relay, relayToken)?.base ?? null
+}
+
+/** 组卡前把外链封面转存进站内图床（卡片永久自持——豆瓣图床有防盗链，浏览器直连必挂）；
+ *  转存失败时豆瓣图退中转 /img 或省略（resolveCardCover），非豆瓣源 CDN 无防盗链保留直连 */
+async function buildCardWithCover(env: Env, item: MediaItem, relayBase: string | null): Promise<string> {
+  const cover = (item.cover || '').trim()
+  let transferred: string | null = null
+  if (cover && !cover.startsWith('/images/')) {
+    transferred = await transferImage(env, cover, '书影音封面', coverReferer(cover) || undefined)
+  }
+  const resolved = resolveCardCover(cover, transferred, relayBase)
+  return buildCardHtml({ ...item, cover: resolved.cover })
+}
+
+/** 编辑器结果列表的封面缩略图代理（<img> 自动带同源会话 Cookie，注册在鉴权之后）：
+ *  豆瓣图床防盗链（无 Referer 418、外站 403），浏览器直连必挂；白名单限常用封面 CDN，
+ *  限频 + 体积上限。仅供编辑器预览——正式卡片走转存（buildCardWithCover），不烘代理地址 */
+api.get('/admin/tools/douban/img', async (c) => {
+  const raw = c.req.query('u') || ''
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return jsonError('链接不合法')
+  }
+  if (u.protocol !== 'https:' || !coverProxyHostOk(u.hostname)) return jsonError('域名不在白名单', 403)
+  if (!rateLimit(`doubanimg:${clientIp(c.req.raw)}`, 60, 60_000)) return jsonError('请求过于频繁，请稍后再试', 429)
+  try {
+    const res = await fetch(u, {
+      headers: { 'User-Agent': BROWSER_UA, Referer: coverReferer(raw) || `${u.origin}/` },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!res.ok) return jsonError('封面拉取失败', 502)
+    const ct = String(res.headers.get('content-type') || '').split(';')[0]
+    if (!/^image\/(jpeg|png|webp|gif)$/.test(ct)) return jsonError('非图片响应', 502)
+    const buf = await res.arrayBuffer()
+    if (buf.byteLength === 0 || buf.byteLength > 1_000_000) return jsonError('图片过大', 502)
+    c.header('Cache-Control', 'private, max-age=86400')
+    c.header('X-Content-Type-Options', 'nosniff')
+    return c.body(buf, 200, { 'Content-Type': ct })
+  } catch {
+    return jsonError('封面拉取失败', 502)
+  }
+})
+
+/** 书影音卡片（第三方编辑器插件 douban-media 的数据面），见 src/douban.ts 与 douban-relay/。
+ *  中转地址/令牌由插件随请求携带（存插件自己的 localStorage，不进 settings），
+ *  本端点只认代码构造的豆瓣地址（粘贴链接仅提取条目 id 重组），不构成开放代理；
+ *  插件停用即端点 404（与编辑器侧开关一致），限频同 linkmeta。
+ *  封面在组卡时转存进站内图床（buildCardWithCover），零配置即可用；
+ *  中转可选，提升豆瓣详情（尤其电影条目页，sec 风控最紧）的成功率 */
+api.post('/admin/tools/douban', async (c) => {
+  const settings = await getSettings(c.env.DB)
+  const disabled = cleanDisabledPlugins(String(settings.pluginsDisabled ?? ''))
+  if (disabled === null || disabled.split(',').includes('douban-media')) return jsonError('书影音插件已停用', 404)
+  const body = await c.req
+    .json<{
+      action?: string
+      type?: string
+      q?: string
+      id?: string
+      url?: string
+      relay?: string
+      relayToken?: string
+      tmdbKey?: string
+      item?: unknown
+    }>()
+    .catch(() => null)
+  const action = String(body?.action ?? '')
+  const type = String(body?.type ?? '')
+  if (!['search', 'detail', 'card', 'test'].includes(action)) return jsonError('未知操作')
+  if (action !== 'test' && action !== 'card' && !['book', 'movie', 'music'].includes(type)) return jsonError('未知类型')
+  const ip = clientIp(c.req.raw)
+  if (!rateLimit(`douban:${ip}`, 10, 60_000)) return jsonError('操作太频繁，请稍后再试', 429)
+  // 外部携带的中转配置收敛长度；TMDB key 是 32 位十六进制（douban.ts 内再校验）
+  const relay = String(body?.relay ?? '').trim().slice(0, 2048)
+  const relayToken = String(body?.relayToken ?? '').trim().slice(0, 256)
+  const tmdbKey = String(body?.tmdbKey ?? '').trim().slice(0, 64)
+  try {
+    if (action === 'test') return c.json(await probeRelay(relay, relayToken))
+    if (action === 'search') {
+      const q = String(body?.q ?? '').trim().slice(0, 80)
+      if (!q) return jsonError('请输入书名 / 影名 / 曲名')
+      return c.json(await searchMedia({ type: type as 'book' | 'movie' | 'music', q, relay, relayToken, tmdbKey }))
+    }
+    // detail：条目 id 优先（搜索结果点选），也接受粘贴的豆瓣链接（只提取数字 id）；
+    // blocked 时插件用搜索结果走 card 动作补卡。卡片封面在此转存进站内图床
+    if (action === 'detail') {
+      const id = /^\d{1,14}$/.test(String(body?.id ?? '')) ? String(body?.id) : subjectIdFromUrl(String(body?.url ?? ''))
+      if (!id) return jsonError('缺少条目 id（或粘贴的链接不含豆瓣 subject）')
+      const r = await fetchDoubanDetail({ type: type as 'book' | 'movie' | 'music', id, relay, relayToken })
+      const card = r.item ? await buildCardWithCover(c.env, r.item, validateRelayBase(relay, relayToken)) : null
+      return c.json({ item: r.item, blocked: r.blocked, card })
+    }
+    // card：详情被风控时的补卡路径——插件回传搜索结果条目，服务端校验重建后组卡（封面同样转存）
+    const item = sanitizeMediaItem(body?.item)
+    if (!item) return jsonError('条目数据不完整')
+    return c.json({ card: await buildCardWithCover(c.env, item, validateRelayBase(relay, relayToken)) })
+  } catch {
+    return jsonError('抓取失败，请稍后再试', 502)
+  }
 })
 
 /** 粘贴净化配套：外链图（公众号 mmbiz.qpic.cn 等有防盗链/随时失效的风险）转存站内图床并改写 src。
@@ -1665,6 +1919,8 @@ type CommentBody = {
   website?: string
   parentId?: number
   link?: string
+  /** 游客选填 QQ（评论头像 C2 扩展）：仅头像抓取记账位，任何公开出参不携带 */
+  qq?: string
 }
 
 async function publicComment(
@@ -1753,10 +2009,21 @@ async function publicComment(
   }
   const nickname = String(body?.nickname || '').trim().slice(0, 24)
   if (!nickname) return jsonError(`昵称和${o.noun}内容不能为空`)
+  // 游客 QQ 头像（评论头像 C2 扩展）：选填，格式不对按「没填」处理——选填字段不拦评论。
+  // 先查同号历史头像直接复用（抓取次数 = 唯一 QQ 数，且被评论限流再压一层），未命中才出站抓取；
+  // qq 本体只落库内部列，任何公开出参不携带，头像一律站内转存同源输出
+  const qqRaw = String(body?.qq || '').trim()
+  const guestQQ = qqRaw && isValidQQ(qqRaw) ? qqRaw : ''
+  const guestAvatar = guestQQ
+    ? (await db
+        .prepare("SELECT avatar FROM comments WHERE qq = ? AND avatar != '' ORDER BY created_at DESC LIMIT 1")
+        .bind(guestQQ)
+        .first<{ avatar: string }>())?.avatar || (await fetchQQAvatar(c.env, guestQQ)) || ''
+    : ''
   if (o.withContact) {
     await db
       .prepare(
-        'INSERT INTO comments (post_id, weibo_id, parent_id, is_admin, nickname, email, website, content, status, ip, created_at) VALUES (?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO comments (post_id, weibo_id, parent_id, is_admin, nickname, email, website, qq, avatar, content, status, ip, created_at) VALUES (?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .bind(
         t.postId,
@@ -1764,6 +2031,8 @@ async function publicComment(
         nickname,
         String(body?.email || '').slice(0, 100),
         String(body?.website || '').slice(0, 200),
+        guestQQ,
+        guestAvatar,
         content,
         pending ? 'pending' : 'approved',
         ip,
@@ -1773,9 +2042,9 @@ async function publicComment(
   } else {
     await db
       .prepare(
-        'INSERT INTO comments (post_id, weibo_id, parent_id, is_admin, nickname, content, status, ip, created_at) VALUES (?, ?, 0, 0, ?, ?, ?, ?, ?)'
+        'INSERT INTO comments (post_id, weibo_id, parent_id, is_admin, nickname, qq, avatar, content, status, ip, created_at) VALUES (?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .bind(t.postId, t.weiboId, nickname, content, pending ? 'pending' : 'approved', ip, now)
+      .bind(t.postId, t.weiboId, nickname, guestQQ, guestAvatar, content, pending ? 'pending' : 'approved', ip, now)
       .run()
   }
   // 新留言推送到 Telegram（异步，不阻塞回复；开关在后台「设置 → 外部发布」）
@@ -1857,11 +2126,11 @@ api.get('/public/weibo/:id/comments', async (c) => {
   const settings = await getSettings(c.env.DB)
   const { results } = await c.env.DB
     .prepare(
-      "SELECT cm.id, cm.parent_id, cm.is_admin, cm.nickname, cm.content, cm.created_at, m.display_name AS member_name, m.tier AS member_tier FROM comments cm LEFT JOIN members m ON m.id = cm.member_id WHERE cm.weibo_id = ? AND cm.status = 'approved' ORDER BY cm.created_at ASC LIMIT 200"
+      "SELECT cm.id, cm.parent_id, cm.is_admin, cm.nickname, cm.content, cm.created_at, cm.avatar, m.display_name AS member_name, m.tier AS member_tier, m.avatar AS member_avatar FROM comments cm LEFT JOIN members m ON m.id = cm.member_id WHERE cm.weibo_id = ? AND cm.status = 'approved' ORDER BY cm.created_at ASC LIMIT 200"
     )
     .bind(id)
     .all()
-  return c.json({ comments: results ?? [], allowComments: settings.allowComments === '1' })
+  return c.json({ comments: results ?? [], allowComments: settings.allowComments === '1', adminAvatar: settings.avatarUrl || '' })
 })
 
 api.post('/public/weibo/:id/comments', async (c) => {

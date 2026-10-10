@@ -2,9 +2,32 @@
  * 纯 Canvas 2D 手绘，无任何依赖：暖纸底 + 白色浮卡，头像/站名 → 正文（#话题#高亮）→ 九宫格配图 → 时间 + 域名。
  * 图片全部先经 loadImage（跨域强制 crossOrigin='anonymous'，失败返回 null 画占位），
  * 保证画布永不被跨域内容污染，toBlob 导出必成功。
- * 产出 1280px 宽 PNG：弹窗内 <img> 预览（手机长按可存），「保存图片」走 download，
- * 支持 navigator.share 带文件的设备（iOS/安卓）唤起系统分享面板直发朋友圈，
+ * 产出 1280px 宽 PNG：弹窗内 <img> 预览（手机长按可存），「保存到相册」在手机端走系统分享面板
+ * （iOS「存储图像」、安卓/鸿蒙「保存到相册」直达系统相册——a[download] 在手机上只会落「文件/下载」），
+ * 桌面端与不支持带文件分享的浏览器退回 download；支持 navigator.share 带文件的设备可「分享给朋友」直发朋友圈，
  * 支持 Clipboard API 的浏览器（桌面 Chrome/Edge/Safari 16+/Firefox 127+）可「复制图片」直接粘贴。 */
+
+/* 英文测试版（English 0.1）：SSR 在 <html data-edition="en"> 上标记，分享面板文案随语言切换 */
+const EN = document.documentElement.getAttribute('data-edition') === 'en'
+const T = (zh, en) => (EN ? en : zh)
+
+/* 手机端判定：UA 常规识别 + iPadOS（Mac 桌面 UA + 多点触控）。
+ * 手机上 a[download] 只会落「文件/下载」，进相册的唯一 Web 通道是带文件的系统分享面板 */
+function isMobile() {
+  const ua = navigator.userAgent || ''
+  if (/Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(ua)) return true
+  return /Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1
+}
+
+/* 能力探测（canShare 不需手势、不弹面板）：能否带文件唤起系统分享面板。
+ * 用小样文件探一次，真保存时还会按实文件 canShare 复核（见保存按钮） */
+const CAN_SHARE_FILES = (function () {
+  try {
+    return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array([0x89, 0x50])], 'p.png', { type: 'image/png' })] }))
+  } catch (e) {
+    return false
+  }
+})()
 
 const S = 2 // 输出倍率：逻辑 640 宽 × 2 = 1280px 成品
 const W = 640
@@ -377,6 +400,15 @@ function renderCard(d, av, imgs) {
 let modal = null
 let state = null // { url, file, site, text, link?, title? }
 
+// Esc 关闭挂在 document 一次（模块加载时）：ensureModal 每次重建 overlay，若在此注册会随开合次数累积监听器
+document.addEventListener(
+  'keydown',
+  function (e) {
+    if (e.key === 'Escape' && modal) close()
+  },
+  true
+)
+
 function ensureModal() {
   if (modal) return modal
   const style = document.createElement('style')
@@ -389,7 +421,8 @@ function ensureModal() {
     '.sc-body{overflow:auto;padding:2px 16px 4px;display:flex;min-height:200px;-webkit-overflow-scrolling:touch}' +
     /* 居中用子元素 margin:auto：align-items:center 会让超高内容的顶部溢出滚不回来 */
     '.sc-body>*{margin:auto}' +
-    '.sc-body img{width:100%;height:auto;border-radius:10px;display:block;box-shadow:0 6px 24px rgba(60,50,30,.18)}' +
+    /* touch-callout/user-select 显式放行：防全局 none 样式把 iOS 长按「存储图像」菜单禁掉 */
+    '.sc-body img{width:100%;height:auto;border-radius:10px;display:block;box-shadow:0 6px 24px rgba(60,50,30,.18);-webkit-touch-callout:default;-webkit-user-select:auto;user-select:auto}' +
     '.sc-spin{width:30px;height:30px;border-radius:50%;border:3px solid #e4dccb;border-top-color:#b95c38;animation:sc-rot .8s linear infinite}' +
     '@keyframes sc-rot{to{transform:rotate(360deg)}}' +
     '@keyframes sc-fade{from{opacity:0}}' +
@@ -410,15 +443,15 @@ function ensureModal() {
   const overlay = document.createElement('div')
   overlay.className = 'sc-overlay'
   overlay.innerHTML =
-    '<div class="sc-panel" role="dialog" aria-label="分享卡片">' +
-    '<div class="sc-head"><span class="sc-title">分享卡片</span><button type="button" class="sc-close" aria-label="关闭">×</button></div>' +
+    '<div class="sc-panel" role="dialog" aria-label="' + T('分享卡片', 'Share card') + '">' +
+    '<div class="sc-head"><span class="sc-title">' + T('分享卡片', 'Share card') + '</span><button type="button" class="sc-close" aria-label="' + T('关闭', 'Close') + '">×</button></div>' +
     '<div class="sc-body"><div class="sc-spin" aria-hidden="true"></div></div>' +
-    '<p class="sc-tip">手机长按图片可保存或转发</p>' +
+    '<p class="sc-tip">' + T('手机长按图片可保存或转发', 'Press and hold the image to save or share it') + '</p>' +
     '<div class="sc-foot">' +
-    '<button type="button" class="sc-btn sc-btn-alt" data-act="link" hidden>复制链接</button>' +
-    '<button type="button" class="sc-btn sc-btn-alt" data-act="copy" hidden>复制图片</button>' +
-    '<button type="button" class="sc-btn sc-btn-alt" data-act="share" hidden>分享给朋友</button>' +
-    '<button type="button" class="sc-btn sc-btn-main" data-act="save" disabled>生成中…</button>' +
+    '<button type="button" class="sc-btn sc-btn-alt" data-act="link" hidden>' + T('复制链接', 'Copy link') + '</button>' +
+    '<button type="button" class="sc-btn sc-btn-alt" data-act="copy" hidden>' + T('复制图片', 'Copy image') + '</button>' +
+    '<button type="button" class="sc-btn sc-btn-alt" data-act="share" hidden>' + T('分享给朋友', 'Share') + '</button>' +
+    '<button type="button" class="sc-btn sc-btn-main" data-act="save" disabled>' + T('生成中…', 'Generating…') + '</button>' +
     '</div>' +
     '</div>'
   document.body.appendChild(overlay)
@@ -427,15 +460,13 @@ function ensureModal() {
     if (e.target === overlay) close()
   })
   overlay.querySelector('.sc-close').addEventListener('click', close)
-  document.addEventListener(
-    'keydown',
-    function (e) {
-      if (e.key === 'Escape' && modal) close()
-    },
-    true
-  )
   overlay.querySelector('[data-act=save]').addEventListener('click', function () {
     if (!state) return
+    // 手机端优先系统分享面板：iOS「存储图像」、安卓/鸿蒙「保存到相册」直达系统相册（download 只落「文件」）
+    if (isMobile() && navigator.canShare && navigator.canShare({ files: [state.file] })) {
+      navigator.share({ files: [state.file] }).catch(function () {})
+      return
+    }
     const a = document.createElement('a')
     a.href = state.url
     a.download = state.file.name
@@ -445,7 +476,7 @@ function ensureModal() {
     if (!state) return
     // 能带图带图（直发聊天/朋友圈，文章标题做文案）；带不动图时分享纯链接（文章）
     if (state.file && navigator.canShare && navigator.canShare({ files: [state.file] })) {
-      navigator.share({ files: [state.file], title: state.title || state.site + '的微博', text: state.text }).catch(function () {})
+      navigator.share({ files: [state.file], title: state.title || (EN ? state.site + "'s note" : state.site + '的微博'), text: state.text }).catch(function () {})
       return
     }
     if (state.link) navigator.share({ title: state.title || state.site, text: state.text, url: state.link }).catch(function () {})
@@ -457,20 +488,20 @@ function ensureModal() {
     const note = function (msg) {
       btn.textContent = msg
       setTimeout(function () {
-        btn.textContent = '复制图片'
+        btn.textContent = T('复制图片', 'Copy image')
       }, 1600)
     }
     try {
       navigator.clipboard.write([new ClipboardItem({ 'image/png': state.file })]).then(
         function () {
-          note('已复制 ✓')
+          note(T('已复制 ✓', 'Copied ✓'))
         },
         function () {
-          note('复制失败')
+          note(T('复制失败', 'Copy failed'))
         }
       )
     } catch (e) {
-      note('复制失败')
+      note(T('复制失败', 'Copy failed'))
     }
   })
   // 复制链接（文章模式）：Clipboard API 优先，老浏览器退回 execCommand
@@ -480,7 +511,7 @@ function ensureModal() {
     const note = function (msg) {
       btn.textContent = msg
       setTimeout(function () {
-        btn.textContent = '复制链接'
+        btn.textContent = T('复制链接', 'Copy link')
       }, 1600)
     }
     const fallbackCopy = function () {
@@ -500,14 +531,14 @@ function ensureModal() {
     try {
       navigator.clipboard.writeText(state.link).then(
         function () {
-          note('已复制 ✓')
+          note(T('已复制 ✓', 'Copied ✓'))
         },
         function () {
-          note(fallbackCopy() ? '已复制 ✓' : '复制失败')
+          note(fallbackCopy() ? T('已复制 ✓', 'Copied ✓') : T('复制失败', 'Copy failed'))
         }
       )
     } catch (e) {
-      note(fallbackCopy() ? '已复制 ✓' : '复制失败')
+      note(fallbackCopy() ? T('已复制 ✓', 'Copied ✓') : T('复制失败', 'Copy failed'))
     }
   })
 
@@ -524,17 +555,33 @@ function close() {
   document.body.style.overflow = ''
 }
 
+/* 提示行按设备定形：桌面隐藏（按钮自明）；手机引导两条进相册的路——长按选「存储图像」
+ * 或点「保存到相册」按钮（走系统分享面板）；不支持带文件分享的老浏览器只剩长按一条路 */
+function setTip(m, article) {
+  const mobile = isMobile()
+  m.tip.hidden = !mobile
+  if (!mobile) return
+  m.tip.textContent =
+    mobile && CAN_SHARE_FILES
+      ? article
+        ? T('长按图片选「存储图像」，或点下方「保存到相册」；扫码可打开本文', 'Long-press the image, or tap "Save to Photos" below; scan to open this post')
+        : T('长按图片选「存储图像」，或点下方「保存到相册」', 'Long-press the image, or tap "Save to Photos" below')
+      : article
+        ? T('手机长按图片可保存转发，扫码可打开本文', 'Press and hold to save or share; scan the code to open this post')
+        : T('手机长按图片可保存或转发', 'Press and hold the image to save or share it')
+}
+
 /** 入口：card 为 .wb-card 元素，生成失败抛错由 site.js 提示 */
 export async function openShareCard(card) {
   const d = collect(card)
   const m = ensureModal()
-  m.title.textContent = '分享卡片'
+  m.title.textContent = T('分享卡片', 'Share card')
   m.foot.classList.remove('is-grid')
   m.link.hidden = true
-  m.tip.textContent = '手机长按图片可保存或转发'
+  setTip(m, false)
   m.body.innerHTML = '<div class="sc-spin" aria-hidden="true"></div>'
   m.save.disabled = true
-  m.save.textContent = '生成中…'
+  m.save.textContent = T('生成中…', 'Generating…')
   m.share.hidden = true
   m.copy.hidden = true
   if (state) {
@@ -566,7 +613,8 @@ export async function openShareCard(card) {
       img.alt = '微博分享卡片'
       m.body.appendChild(img)
       m.save.disabled = false
-      m.save.textContent = '保存图片'
+      // 手机端且能带文件分享 → 按钮改走系统分享面板进相册，文案如实改为「保存到相册」
+      m.save.textContent = isMobile() && CAN_SHARE_FILES ? T('保存到相册', 'Save to Photos') : T('保存图片', 'Save image')
       m.share.hidden = !(navigator.canShare && navigator.canShare({ files: [file] }))
       m.copy.hidden = !(navigator.clipboard && window.ClipboardItem)
       resolve()
@@ -795,7 +843,7 @@ function renderArticleCard(d, av, cover) {
     ctx.font = F_CAP
     ctx.fillStyle = SUB
     ctx.textAlign = 'center'
-    ctx.fillText('扫码阅读', qx + qrBox / 2, footTop + qrBox + 12)
+    ctx.fillText(T('扫码阅读', 'Scan to read'), qx + qrBox / 2, footTop + qrBox + 12)
     ctx.textAlign = 'left'
   }
 
@@ -806,13 +854,13 @@ function renderArticleCard(d, av, cover) {
 export async function openArticleShare(btn) {
   const d = collectArticle(btn)
   const m = ensureModal()
-  m.title.textContent = '分享文章'
+  m.title.textContent = T('分享文章', 'Share post')
   m.foot.classList.add('is-grid')
   m.link.hidden = false
-  m.tip.textContent = '手机长按图片可保存转发，扫码可打开本文'
+  setTip(m, true)
   m.body.innerHTML = '<div class="sc-spin" aria-hidden="true"></div>'
   m.save.disabled = true
-  m.save.textContent = '生成中…'
+  m.save.textContent = T('生成中…', 'Generating…')
   m.share.hidden = true
   m.copy.hidden = true
   if (state) {
@@ -841,7 +889,8 @@ export async function openArticleShare(btn) {
       img.alt = '文章分享卡片'
       m.body.appendChild(img)
       m.save.disabled = false
-      m.save.textContent = '保存图片'
+      // 与微博卡片同口径：手机端且能带文件分享 → 系统分享面板进相册
+      m.save.textContent = isMobile() && CAN_SHARE_FILES ? T('保存到相册', 'Save to Photos') : T('保存图片', 'Save image')
       m.share.hidden = !navigator.share
       m.copy.hidden = !(navigator.clipboard && window.ClipboardItem)
       resolve()

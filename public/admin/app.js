@@ -152,14 +152,14 @@ const MENU = [
   { type: 'group', label: '内容' },
   { id: 'posts', href: '#/posts', label: '文章', icon: 'post' },
   { id: 'weibo', href: '#/weibo', label: '微博', icon: 'weibo' },
-  { id: 'comments', href: '#/comments', label: '评论', icon: 'comment', badge: () => state.pendingComments || 0 },
-  { id: 'media', href: '#/media', label: '媒体', icon: 'image' },
-  { id: 'categories', href: '#/categories', label: '分类', icon: 'folder' },
-  { id: 'links', href: '#/links', label: '友链', icon: 'link', badge: () => state.pendingLinks || 0 },
   { id: 'pages', href: '#/pages', label: '页面', icon: 'page' },
-  { id: 'trash', href: '#/trash', label: '回收站', icon: 'trash' },
+  { id: 'media', href: '#/media', label: '媒体', icon: 'image' },
+  { type: 'group', label: '互动' },
+  { id: 'comments', href: '#/comments', label: '评论', icon: 'comment', badge: () => state.pendingComments || 0 },
   { id: 'members', href: '#/members', label: '会员', icon: 'member' },
+  { id: 'links', href: '#/links', label: '友链', icon: 'link', badge: () => state.pendingLinks || 0 },
   { type: 'group', label: '系统' },
+  { id: 'trash', href: '#/trash', label: '回收站', icon: 'trash' },
   { id: 'appearance', href: '#/appearance', label: '皮肤', icon: 'palette' },
   { id: 'plugins', href: '#/plugins', label: '插件', icon: 'plug' },
   { id: 'settings', href: '#/settings', label: '设置', icon: 'gear' },
@@ -255,7 +255,18 @@ async function shellView(active, contentHTML) {
   if (!state.user) return
   // 路由已切走（或已登出）时放弃本次渲染，防慢响应把旧页面盖回来
   if (active !== pendingRoute) return
-  const sideMini = localStorage.getItem('admin-side') === 'mini'
+  // 英文测试版（English 0.1）后台提醒：运行中常驻公示；异常回退时换红色警示条（机制见 src/i18n.ts）
+  const s = state.settings || {}
+  let editionBanner = ''
+  if (s.edition === 'en') {
+    editionBanner =
+      s.editionEnStatus === 'fallback'
+        ? `<div style="background:var(--warn,#b45309);color:#fff;font-size:13px;line-height:1.7;padding:9px 16px;">⚠️ <b>英文测试版出现异常，已自动回退中文版</b>（${s.editionEnAt ? new Date(Number(s.editionEnAt)).toLocaleString() + '：' : ''}${esc(s.editionEnError || '未知错误')}）。可在「设置 → 语言版本」重新开启。</div>`
+        : `<div style="background:#1d4ed8;color:#fff;font-size:13px;line-height:1.7;padding:9px 16px;">🧪 <b>英文测试版 English 0.1 正在前台运行（仅供测试）</b>：前台界面为英文并显示测试版横幅，文章与微博正文保持原文；如出现异常会自动回退中文版。可在「设置 → 语言版本」关闭。</div>`
+  }
+  // 隐私加固浏览器（Safari 锁定模式等）访问 localStorage 即抛 SecurityError：偏好存取吞异常，降级默认值
+  const prefGet = (k) => { try { return localStorage.getItem(k) } catch { return null } }
+  const sideMini = prefGet('admin-side') === 'mini'
   // 移动端底部栏只放高频项，其余收进「更多」抽屉；不在栏内的待审数聚合成红点
   const barItems = MOBILE_TAB_IDS.map((id) => MENU.find((m) => m.id === id)).filter(Boolean)
   const moreDot = MENU.reduce((sum, m) => (m.badge && !MOBILE_TAB_IDS.includes(m.id) ? sum + m.badge() : sum), 0)
@@ -273,7 +284,7 @@ async function shellView(active, contentHTML) {
         <button class="side-logout" id="btn-logout">退出</button>
       </div>
     </aside>
-    <main class="main">${contentHTML}</main>
+    <main class="main">${editionBanner}${contentHTML}</main>
     <div class="sheet-mask" id="sheet-mask">
       <div class="side-sheet" role="dialog" aria-label="全部菜单">
         <div class="side-sheet-head"><span>全部菜单</span><button class="side-sheet-close" id="btn-sheet-close" type="button">✕</button></div>
@@ -283,7 +294,7 @@ async function shellView(active, contentHTML) {
   </div>`
   document.getElementById('btn-side-fold').addEventListener('click', (e) => {
     const mini = $app.querySelector('.shell').classList.toggle('side-mini')
-    localStorage.setItem('admin-side', mini ? 'mini' : 'full')
+    try { localStorage.setItem('admin-side', mini ? 'mini' : 'full') } catch { /* 锁定模式下不记住偏好 */ }
     e.currentTarget.title = mini ? '展开侧栏' : '收起侧栏'
   })
   document.getElementById('btn-logout').addEventListener('click', async () => {
@@ -531,6 +542,8 @@ async function viewStats() {
 async function viewPosts() {
   const hash = location.hash
   const q = new URLSearchParams(hash.split('?')[1] || '')
+  // 文章页第二页签：分类与标签（原独立「分类」页并入，见 viewPostTaxonomy）
+  if (q.get('view') === 'cats') return viewPostTaxonomy()
   const status = q.get('status') || 'all'
   const page = parseInt(q.get('page') || '1', 10)
   const kw = q.get('q') || ''
@@ -583,6 +596,10 @@ async function viewPosts() {
     </div>
     <div class="toolbar">
       <div class="tabs">
+        <button class="tab is-active" data-vtab="list" type="button">列表</button>
+        <button class="tab" data-vtab="cats" type="button">分类标签</button>
+      </div>
+      <div class="tabs">
         ${['all', 'published', 'scheduled', 'draft']
           .map(
             (t) =>
@@ -601,10 +618,14 @@ async function viewPosts() {
     location.hash = '#/posts?' + p.toString()
   }
   $app.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => nav({ status: b.dataset.tab, page: 1 })))
+  $app.querySelectorAll('[data-vtab="cats"]').forEach((b) =>
+    b.addEventListener('click', () => (location.hash = '#/posts?view=cats'))
+  )
   const searchEl = document.getElementById('search-input')
   searchEl.addEventListener('focus', () => (searchFocused = true))
   searchEl.addEventListener('blur', () => (searchFocused = false))
   searchEl.addEventListener('input', () => {
+    if (searchEl.isComposing) return // 中文输入法组词中的 input 不触发搜索（组词结束会有一次 isComposing=false 的 input）
     clearTimeout(postsSearchTimer)
     postsSearchTimer = setTimeout(() => nav({ q: searchEl.value.trim(), page: 1 }), 400)
   })
@@ -765,6 +786,7 @@ async function viewWeibo() {
   }
 
   /** 加图统一入口：文件选择 / 粘贴 / 拖拽共用，自动过滤非图片并尊重 9 图上限 */
+  let wbUploading = 0 // 在途上传计数：发布/存草稿前必须归零（同前台发布器 cpUploading 口径），防半截图发出
   async function addImageFiles(fileList) {
     const all = [...(fileList || [])]
     const imgs = all.filter((f) => /^image\//.test(f.type))
@@ -777,6 +799,7 @@ async function viewWeibo() {
     if (imgs.length > room) toast(`最多 ${WB_MAX_IMAGES} 张图，多出的 ${imgs.length - room} 张已忽略`, true)
     const label = addImgBtn.textContent
     for (const f of imgs.slice(0, room)) {
+      wbUploading++
       try {
         addImgBtn.textContent = `上传中 ${f.name.slice(0, 12)}…`
         const r = await uploadFile(await compressImage(f), null)
@@ -784,6 +807,8 @@ async function viewWeibo() {
         renderImgs()
       } catch (e) {
         toast(e.message, true)
+      } finally {
+        wbUploading--
       }
     }
     addImgBtn.textContent = label
@@ -820,6 +845,8 @@ async function viewWeibo() {
   async function saveWeibo(status) {
     const content = contentEl.value.trim()
     if (!content && !images.length) return toast('写点什么，或者配张图吧', true)
+    // 二道防线：上传未完就点发布，微博会以缺图状态发出（图片还在闭包里推）
+    if (wbUploading > 0) return toast('还有图片在上传中，稍等一下', true)
     // 请求期间禁用全部按钮：连击会重复发微博
     const btns = ['wb-save', 'wb-publish', 'wb-draft'].map((id) => document.getElementById(id)).filter(Boolean)
     btns.forEach((b) => (b.disabled = true))
@@ -1143,8 +1170,8 @@ function flModal(link) {
   })
 }
 
-/* ---------------- 分类管理 ---------------- */
-async function viewCategories() {
+/* ---------------- 分类与标签（文章页第二页签，原独立「分类」页并入；#/categories 旧路由在 navigate 里重定向） ---------------- */
+async function viewPostTaxonomy() {
   let d, t
   try {
     ;[d, t] = await Promise.all([api('/admin/categories'), api('/admin/tags')])
@@ -1175,8 +1202,14 @@ async function viewCategories() {
     .join('')
 
   await shellView(
-    'categories',
-    `<div class="page-head"><div><div class="page-title">分类</div><div class="page-sub">文章的大归类，与随手的标签互补</div></div></div>
+    'posts',
+    `<div class="page-head"><div><div class="page-title">文章</div><div class="page-sub">分类的大归类与标签，写文章时选用</div></div></div>
+    <div class="toolbar">
+      <div class="tabs">
+        <button class="tab" data-vtab="list" type="button">列表</button>
+        <button class="tab is-active" data-vtab="cats" type="button">分类标签</button>
+      </div>
+    </div>
     <div class="toolbar">
       <input class="input" id="cat-name" placeholder="新分类名称，如：生活随笔" maxlength="20">
       <button class="btn btn-primary" id="cat-add">添加分类</button>
@@ -1192,6 +1225,10 @@ async function viewCategories() {
         <div class="tag-manage-list">${tagChips || '<div class="empty-box" style="padding:20px 0;">还没有标签，在写文章时添加，或在这里预建</div>'}</div>
       </div>
     </div>`
+  )
+
+  $app.querySelectorAll('[data-vtab="list"]').forEach((b) =>
+    b.addEventListener('click', () => (location.hash = '#/posts'))
   )
 
   document.getElementById('cat-add').addEventListener('click', async () => {
@@ -1257,6 +1294,8 @@ async function viewCategories() {
         </div>
         <div class="modal-foot"><button class="btn" data-close>取消</button><button class="btn btn-primary" id="cat-edit-save">保存</button></div>`)
       m.mask.querySelector('#cat-edit-save').addEventListener('click', async () => {
+        const saveBtn = m.mask.querySelector('#cat-edit-save')
+        saveBtn.disabled = true
         try {
           await api(`/admin/categories/${id}`, {
             method: 'PUT',
@@ -1270,6 +1309,8 @@ async function viewCategories() {
           navigate()
         } catch (e) {
           toast(e.message, true)
+        } finally {
+          saveBtn.disabled = false // 弹窗已关时改的是游离节点，无副作用
         }
       })
     })
@@ -1518,6 +1559,7 @@ async function viewMembers() {
   }
   const searchEl = document.getElementById('mb-search')
   searchEl.addEventListener('input', () => {
+    if (searchEl.isComposing) return // 同文章搜索：组词中不打断输入
     clearTimeout(membersSearchTimer)
     membersSearchTimer = setTimeout(() => nav({ q: searchEl.value.trim(), page: 1 }), 400)
   })
@@ -2334,6 +2376,9 @@ async function viewPlugins() {
 }
 
 /* ---------------- 设置 ---------------- */
+/* 设置页当前页签：页内记忆（不进 hash——hashchange 会触发 navigate 重挂视图，丢未保存输入） */
+let settingsTab = 'site'
+
 async function viewSettings() {
   try {
     state.settings = (await api('/admin/settings')).settings
@@ -2347,6 +2392,17 @@ async function viewSettings() {
     `<div class="page-head"><div><div class="page-title">设置</div><div class="page-sub">站点的门面和规矩</div></div>
       <button class="btn btn-primary" id="btn-save">保存全部</button></div>
 
+    <div class="settings-tabs-row">
+      <div class="tabs settings-tabs" id="settings-tabs">
+        <button class="tab" data-stab="site" type="button">站点</button>
+        <button class="tab" data-stab="social" type="button">互动</button>
+        <button class="tab" data-stab="advance" type="button">进阶</button>
+        <button class="tab" data-stab="data" type="button">数据</button>
+      </div>
+      <div class="settings-hint" id="settings-hint"></div>
+    </div>
+
+    <div class="stab-pane" data-pane="site">
     <div class="panel" style="padding:20px;">
       <div class="form-section">
         <h3>站点信息</h3>
@@ -2402,19 +2458,25 @@ async function viewSettings() {
     </div>
 
     <div class="panel" style="padding:20px;">
-      <div class="form-section"><h3>站点状态</h3><div class="sec-desc">特殊时刻的全站开关：两个都是可逆的，随时保存随时恢复</div>
-        <div class="switch-row">
-          <div><div class="switch-label">灰度模式</div><div class="switch-sub">全站去色显示（黑白），用于哀悼、纪念等特殊时刻；后台不受影响</div></div>
-          <label class="switch"><input type="checkbox" id="st-siteGrayscale" ${s.siteGrayscale === '1' ? 'checked' : ''}><span class="track"></span></label>
-        </div>
-        <div class="switch-row">
-          <div><div class="switch-label">关闭站点</div><div class="switch-sub">开启后访客只能看到闭站页，RSS、评论等一并停用；后台与已登录的你不受影响</div>${state.demo ? '<div class="switch-sub" style="color:var(--warn);">🎓 演示站已停用此开关（防止有人把体验站关掉，其他体验者会看不了）</div>' : ''}</div>
-          <label class="switch"><input type="checkbox" id="st-siteClosed" ${s.siteClosed === '1' ? 'checked' : ''} ${state.demo ? 'disabled' : ''}><span class="track"></span></label>
-        </div>
-        <div class="form-item"><label>闭站公告（展示在闭站页，支持换行；留空使用默认文案）</label><textarea class="textarea" id="st-siteClosedMessage" rows="3" maxlength="1000" placeholder="本站暂时关闭，请稍后再来。" ${state.demo ? 'disabled' : ''}>${esc(s.siteClosedMessage || '')}</textarea></div>
+      <div class="form-section"><h3>语言版本（英文测试版 English 0.1）</h3><div class="sec-desc">前台界面语言：文章与微博正文保持原文，仅界面文案切换。英文版渲染出现异常时会自动回退中文版，并在后台顶部提醒；重新开启即重置异常状态</div>
+        <label class="mode-row"><input type="radio" name="st-edition" value="zh"><span class="mode-text"><b>中文（默认）</b><i>前台保持中文界面</i></span></label>
+        <label class="mode-row"><input type="radio" name="st-edition" value="en"><span class="mode-text"><b>English 0.1（英文测试版）</b><i>前台界面切换为英文并在页面顶部公示测试版横幅；测试期间搜索引擎不收录（noindex），出问题自动回退中文版</i></span></label>
+        ${s.edition === 'en' && s.editionEnStatus === 'fallback' ? `<div class="switch-sub" style="color:var(--warn);">⚠️ 上次英文版出现异常已自动回退中文版${s.editionEnAt ? '（' + new Date(Number(s.editionEnAt)).toLocaleString() + '）' : ''}：${esc(s.editionEnError || '未知错误')}。重新选择英文版并保存即可重试。</div>` : ''}
       </div>
     </div>
 
+    <div class="panel" style="padding:20px;">
+      <div class="form-section"><h3>账号</h3><div class="sec-desc">${state.demo ? '演示站不支持修改密码（演示账号公示在登录页，每 2 小时随数据一起重置）' : '修改登录密码'}</div>
+        <div class="form-row">
+          <div class="form-item"><label>旧密码</label><input class="input" type="password" id="pw-old" autocomplete="current-password" ${state.demo ? 'disabled' : ''}></div>
+          <div class="form-item"><label>新密码（至少 8 位）</label><input class="input" type="password" id="pw-new" autocomplete="new-password" ${state.demo ? 'disabled' : ''}></div>
+          <div class="form-item" style="flex:0 0 auto;align-self:flex-end;"><button class="btn" id="btn-pw" ${state.demo ? 'disabled' : ''}>修改密码</button></div>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <div class="stab-pane" data-pane="social" hidden>
     <div class="panel" style="padding:20px;">
       <div class="form-section"><h3>评论</h3><div class="sec-desc">访客留言的规则（文章、微博与留言板通用）</div>
         <div class="switch-row">
@@ -2445,6 +2507,22 @@ async function viewSettings() {
           <div><div class="switch-label">开启访客统计采集</div><div class="switch-sub">关闭后前台页面不再上报访问数据（已有数据保留不再新增，统计页仍可看历史）</div></div>
           <label class="switch"><input type="checkbox" id="st-statsEnabled" ${s.statsEnabled === '1' ? 'checked' : ''}><span class="track"></span></label>
         </div>
+      </div>
+    </div>
+    </div>
+
+    <div class="stab-pane" data-pane="advance" hidden>
+    <div class="panel" style="padding:20px;">
+      <div class="form-section"><h3>站点状态</h3><div class="sec-desc">特殊时刻的全站开关：两个都是可逆的，随时保存随时恢复</div>
+        <div class="switch-row">
+          <div><div class="switch-label">灰度模式</div><div class="switch-sub">全站去色显示（黑白），用于哀悼、纪念等特殊时刻；后台不受影响</div></div>
+          <label class="switch"><input type="checkbox" id="st-siteGrayscale" ${s.siteGrayscale === '1' ? 'checked' : ''}><span class="track"></span></label>
+        </div>
+        <div class="switch-row">
+          <div><div class="switch-label">关闭站点</div><div class="switch-sub">开启后访客只能看到闭站页，RSS、评论等一并停用；后台与已登录的你不受影响</div>${state.demo ? '<div class="switch-sub" style="color:var(--warn);">🎓 演示站已停用此开关（防止有人把体验站关掉，其他体验者会看不了）</div>' : ''}</div>
+          <label class="switch"><input type="checkbox" id="st-siteClosed" ${s.siteClosed === '1' ? 'checked' : ''} ${state.demo ? 'disabled' : ''}><span class="track"></span></label>
+        </div>
+        <div class="form-item"><label>闭站公告（展示在闭站页，支持换行；留空使用默认文案）</label><textarea class="textarea" id="st-siteClosedMessage" rows="3" maxlength="1000" placeholder="本站暂时关闭，请稍后再来。" ${state.demo ? 'disabled' : ''}>${esc(s.siteClosedMessage || '')}</textarea></div>
       </div>
     </div>
 
@@ -2493,9 +2571,32 @@ async function viewSettings() {
           <label>页脚自定义代码（页脚自定义代码插件：注入每一页页脚的 HTML，挂件 / 徽章 / 备案图标；受 CSP 保护，外部脚本不会执行）</label>
           <textarea class="textarea" id="st-footerHtmlCode" rows="3" maxlength="5000" placeholder="<div style=&quot;text-align:center&quot;>🌙 已运行 <b>365</b> 天</div>">${esc(s.footerHtmlCode || '')}</textarea>
         </div>
+        <div class="form-item">
+          <label>Buffer API Key（微博同步 Buffer 插件：buffer.com 注册并连上 X 等社交账号后，在 publish.buffer.com/settings/api 生成；免费档 3 渠道够用）</label>
+          <input class="input" id="st-bufferAccessToken" placeholder="pli…" autocomplete="off" value="${esc(s.bufferAccessToken || '')}">
+        </div>
+        <div class="form-item">
+          <label>Buffer 渠道 ID（同步目标；先填 API Key 再点右侧「拉取渠道」选择即可）</label>
+          <div class="fav-row">
+            <input class="input" id="st-bufferChannelId" style="flex:1;min-width:200px;font-family:ui-monospace,monospace;" placeholder="如 6ac89…" value="${esc(s.bufferChannelId || '')}">
+            <button class="btn btn-sm" id="btn-buffer-channels" type="button">拉取渠道</button>
+          </div>
+          <div class="sec-desc" id="buffer-channels-status" style="margin-top:6px;">同步时机：微博「发布」时自动推一条到所选渠道（X 免费档 280 字符，超出自动截断；#话题# 会转成 X 的话题格式）</div>
+        </div>
+        <div class="form-item">
+          <label>广场地址（广场同步插件：文章与微博发布时同步到官网广场 bloghao.com/plaza；留空 = 官方 hub，自建 hub 才填自己的地址）</label>
+          <input class="input" id="st-plazaEndpoint" placeholder="留空 = 官方 hub（https://plaza.bloghao.com）" value="${esc(s.plazaEndpoint || '')}">
+        </div>
+        <div class="form-item">
+          <label>广场站点 Token（在广场 hub 注册站点后发放，见 docs/PLAZA.md；未填 = 不同步）</label>
+          <input class="input" id="st-plazaToken" placeholder="32 位注册 Token" autocomplete="off" value="${esc(s.plazaToken || '')}">
+          <div class="sec-desc" style="margin-top:6px;">同步时机：文章 / 微博「发布」时自动推一条（编辑重发不重推）；加密文与会员专属文不会上广场。启停在「插件」页</div>
+        </div>
       </div>
     </div>
+    </div>
 
+    <div class="stab-pane" data-pane="data" hidden>
     <div class="panel" style="padding:20px;">
       <div class="form-section"><h3>订阅与备份</h3><div class="sec-desc">把内容完整地交给订阅者，把数据完整地交回自己</div>
         <div class="switch-row">
@@ -2521,17 +2622,33 @@ async function viewSettings() {
         </div>
       </div>
     </div>
-
-    <div class="panel" style="padding:20px;">
-      <div class="form-section"><h3>账号</h3><div class="sec-desc">${state.demo ? '演示站不支持修改密码（演示账号公示在登录页，每 2 小时随数据一起重置）' : '修改登录密码'}</div>
-        <div class="form-row">
-          <div class="form-item"><label>旧密码</label><input class="input" type="password" id="pw-old" autocomplete="current-password" ${state.demo ? 'disabled' : ''}></div>
-          <div class="form-item"><label>新密码（至少 8 位）</label><input class="input" type="password" id="pw-new" autocomplete="new-password" ${state.demo ? 'disabled' : ''}></div>
-          <div class="form-item" style="flex:0 0 auto;align-self:flex-end;"><button class="btn" id="btn-pw" ${state.demo ? 'disabled' : ''}>修改密码</button></div>
-        </div>
-      </div>
     </div>`
   )
+
+  // 页签只在页内切换（不动 hash，避免触发 navigate 重挂视图丢未保存输入）；
+  // 各页签的输入控件始终留在 DOM，「保存全部」跨页签照常收齐，PUT 缺键保留语义不受影响
+  const STAB_HINTS = {
+    site: '站名、头像、首页形态这些门面事，以及登录密码',
+    social: '留言规则、会员体系与访客统计',
+    advance: '闭站等特殊开关与外部服务对接——不确定的先别动',
+    data: '备份与导出：把数据完整地交回自己手里',
+  }
+  const stabBtns = Array.prototype.slice.call(document.querySelectorAll('#settings-tabs .tab'))
+  const applyStab = () => {
+    stabBtns.forEach((b) => b.classList.toggle('is-active', b.dataset.stab === settingsTab))
+    document.querySelectorAll('.stab-pane').forEach((p) => {
+      p.hidden = p.dataset.pane !== settingsTab
+    })
+    const hint = document.getElementById('settings-hint')
+    if (hint) hint.textContent = STAB_HINTS[settingsTab] || ''
+  }
+  stabBtns.forEach((b) =>
+    b.addEventListener('click', () => {
+      settingsTab = b.dataset.stab
+      applyStab()
+    })
+  )
+  applyStab()
 
   function renderFavSlot(url) {
     document.getElementById('fav-preview-slot').innerHTML = url
@@ -2622,6 +2739,10 @@ async function viewSettings() {
   document.querySelector(`input[name="st-siteModeOrder"][value="${orderVal}"]`).checked = true
   syncOrderRow()
 
+  // 语言版本单选回填（英文测试版 English 0.1，键见 src/db.ts DEFAULT_SETTINGS）
+  const savedEdition = s.edition === 'en' ? 'en' : 'zh'
+  document.querySelector(`input[name="st-edition"][value="${savedEdition}"]`).checked = true
+
   document.getElementById('btn-save').addEventListener('click', async (e) => {
     const g = (id) => document.getElementById(id)
     const btn = e.currentTarget
@@ -2636,6 +2757,7 @@ async function viewSettings() {
       ogImageDefault: g('st-ogImageDefault').value.trim(),
       // 主题不在这里改（皮肤页专职）；body 里不带 theme 键，服务端对缺键即保留
       siteMode: modeGroup() === 'both' ? modeOrder() : modeGroup(),
+      edition: (document.querySelector('input[name="st-edition"]:checked') || { value: 'zh' }).value,
       allowComments: g('st-allowComments').checked ? '1' : '0',
       moderateComments: g('st-moderateComments').checked ? '1' : '0',
       postsPerPage: g('st-postsPerPage').value || '10',
@@ -2649,6 +2771,10 @@ async function viewSettings() {
       tgChannelChatId: g('st-tgChannelChatId').value.trim(),
       commentWebhookUrl: g('st-commentWebhookUrl').value.trim(),
       footerHtmlCode: g('st-footerHtmlCode').value,
+      bufferAccessToken: g('st-bufferAccessToken').value.trim(),
+      plazaEndpoint: g('st-plazaEndpoint').value.trim(),
+      plazaToken: g('st-plazaToken').value.trim(),
+      bufferChannelId: g('st-bufferChannelId').value.trim(),
       notifyNewComment: g('st-notifyNewComment').checked ? '1' : '0',
       rssFullText: g('st-rssFullText').checked ? '1' : '0',
       backupEnabled: g('st-backupEnabled').checked ? '1' : '0',
@@ -2674,6 +2800,8 @@ async function viewSettings() {
     const oldP = document.getElementById('pw-old').value
     const newP = document.getElementById('pw-new').value
     if (!oldP || newP.length < 8) return toast('新密码至少 8 位', true)
+    const btn = document.getElementById('btn-pw')
+    btn.disabled = true // 连击会发两次 PUT，第二次旧密码已错报「修改失败」盖住成功提示
     try {
       await api('/admin/password', { method: 'PUT', body: { oldPassword: oldP, newPassword: newP } })
       toast('密码已修改')
@@ -2681,6 +2809,8 @@ async function viewSettings() {
       document.getElementById('pw-new').value = ''
     } catch (e) {
       toast(e.message, true)
+    } finally {
+      btn.disabled = false
     }
   })
 
@@ -2688,6 +2818,8 @@ async function viewSettings() {
   tokenInput.addEventListener('click', () => tokenInput.select()) // 事件绑定（CSP 禁内联脚本）
   document.getElementById('btn-token-gen').addEventListener('click', async () => {
     if (tokenInput.value && !(await confirmBox('重新生成后旧 Token 立即失效，已配置的外部工具需要更换新 Token。确定？'))) return
+    const btn = document.getElementById('btn-token-gen')
+    btn.disabled = true // 连击会生成两个 Token，后者使前者失效
     try {
       const d = await api('/admin/external/token', { method: 'POST' })
       tokenInput.value = d.token
@@ -2695,6 +2827,8 @@ async function viewSettings() {
       toast('Token 已生成并保存，同步给外部工具即可使用')
     } catch (e) {
       toast(e.message, true)
+    } finally {
+      btn.disabled = false
     }
   })
   document.getElementById('btn-token-copy').addEventListener('click', () => {
@@ -2724,6 +2858,31 @@ async function viewSettings() {
     }
     btn.disabled = false
     btn.textContent = '保存并一键设置 Webhook'
+  })
+
+  document.getElementById('btn-buffer-channels').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-buffer-channels')
+    const statusEl = document.getElementById('buffer-channels-status')
+    const token = document.getElementById('st-bufferAccessToken').value.trim()
+    if (!token) return toast('先填写 Buffer API Key', true)
+    btn.disabled = true
+    btn.textContent = '拉取中…'
+    try {
+      // 先落库 API Key（渠道端点用它兜底），再拉渠道列表
+      await api('/admin/settings', { method: 'PUT', body: { bufferAccessToken: token } })
+      state.settings.bufferAccessToken = '••••••••'
+      const d = await api('/admin/buffer/channels', { method: 'POST', body: {} })
+      statusEl.textContent = '拉到 ' + d.channels.length + ' 个渠道：' + d.channels.map(function (ch) { return ch.displayName + '（' + ch.service + '）' }).join('、')
+      const pick = d.channels.find(function (ch) { return ch.service === 'twitter' }) || d.channels[0]
+      if (pick) {
+        document.getElementById('st-bufferChannelId').value = pick.id
+        toast('已填入「' + pick.displayName + '」的渠道 ID，记得点上方保存')
+      }
+    } catch (e) {
+      toast(e.message, true)
+    }
+    btn.disabled = false
+    btn.textContent = '拉取渠道'
   })
 
   document.getElementById('btn-backup-now').addEventListener('click', async () => {
@@ -2764,8 +2923,17 @@ function uploadFile(file, onProgress) {
     }
     xhr.onload = () => {
       const d = xhr.response || {}
-      if (xhr.status >= 200 && xhr.status < 300) resolve(d)
-      else reject(new Error(d.error || '上传失败'))
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(d)
+        return
+      }
+      // 与 api() 的会话过期兜底同口径：上传期间会话过期也回登录页，别让用户对着「未登录」toast 反复重试
+      if (xhr.status === 401 && state.user) {
+        state.user = null
+        authView('login')
+        toast('登录已过期，请重新登录', true)
+      }
+      reject(new Error(d.error || '上传失败'))
     }
     xhr.onerror = () => reject(new Error('网络错误，上传失败'))
     const fd = new FormData()
@@ -2790,6 +2958,11 @@ async function navigate() {
   const [path] = h.split('?')
   const parts = path.split('/')
   const name = parts[0] || 'home'
+  // 旧路由兼容：分类已并入文章页第二页签（replace 不留历史记录）
+  if (name === 'categories') {
+    location.replace('#/posts?view=cats')
+    return
+  }
   clearTimeout(postsSearchTimer)
   clearTimeout(membersSearchTimer)
   // 离开编辑器：有未保存修改先自动保存再切页（此时编辑器 DOM 还在，能取到最新内容）；
@@ -2813,7 +2986,6 @@ async function navigate() {
     else if (name === 'posts') await viewPosts()
     else if (name === 'weibo') await viewWeibo()
     else if (name === 'links') await viewLinks()
-    else if (name === 'categories') await viewCategories()
     else if (name === 'pages') await viewPages()
     else if (name === 'trash') await viewTrash()
     else if (name === 'members') await viewMembers()
