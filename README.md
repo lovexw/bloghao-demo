@@ -76,13 +76,28 @@ docker compose up --build -d               # 重新构建即升级
 | `TENANTS_DIR` | `server/data/tenants`（Docker：`/data/tenants`） | 数据根（每个租户一个目录：blog.db + uploads/） |
 | `TENANTS_CONFIG` | `server/tenants.json` | 租户配置 |
 | `PUBLIC_ROOT` | `public/` | 静态资源根 |
-| `TRUST_PROXY` | `1` | 信任反代注入的访客 IP 头；Node 直接暴露公网时设 `0`（防伪造头绕过限流） |
+| `TRUST_PROXY` | `proxy` | 访客 IP 信任档位（`cf` / `proxy` / `off`），见下方「访客 IP 信任档位」 |
 
 `server/tenants.json`：默认 `{"demo.localhost": {"demo": true}}`。本仓库里 `demo` 缺省即开；
 只登记一个租户时任意 Host 自动回落，登记多个租户则严格按 Host 匹配。
 
 重置周期：与官方演示站同为每 2 小时的第 23 分钟（UTC cron `23 */2 * * *`，服务内建，无需外挂）。
 想立即重置：`docker compose restart` 后删掉 `./data/` 下租户目录再启动，或等下一个周期。
+
+## 访客 IP 信任档位（TRUST_PROXY）
+
+登录 / 文章密码解锁 / 评论 / 点赞的限流都按访客 IP 分桶。自托管时业务读到的 IP
+来自 `CF-Connecting-IP` / `X-Forwarded-For` 头——这些头客户端可以随意伪造，**档位
+必须与真实部署形态一致**，否则换一个假 IP 就能重置所有限流桶（密码爆破敞开）：
+
+| TRUST_PROXY | 部署形态 | 行为 |
+|---|---|---|
+| `proxy`（默认） | 本机自控反代（Caddy / Nginx / openresty） | 剥掉入站 `CF-Connecting-IP` / `X-Real-IP`，取 `X-Forwarded-For` **最后一跳**——反代把真实客户端 IP 追加在末尾，客户端伪造的值都在前面 |
+| `cf` | Cloudflare 橙云代理直连源站 | 保留 `CF-Connecting-IP`（CF 边缘强制写入不可伪造），剥掉其余可伪造头 |
+| `off` | Node 直接暴露公网（无反代） | 全部剥掉，以 socket 远端地址注入 |
+
+旧值 `1`/`0` 分别按 `proxy`/`off` 兼容。按 DEPLOY.md 的建议走「Cloudflare 橙云 + 回源反代」
+时，`proxy` 与 `cf` 都安全（反代/边缘追加的真实 IP 都在最后一跳）；直接裸奔公网必须 `off`。
 
 ## License
 

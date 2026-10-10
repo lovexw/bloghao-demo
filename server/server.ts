@@ -27,8 +27,21 @@ import SCHEMA_SQL from '../schema.sql'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 8787)
-/** '1'（默认）= 信任反代注入的访客 IP 头；'0' = Node 直接暴露公网，只认 socket 远端 */
-const TRUST_PROXY = (process.env.TRUST_PROXY ?? '1') !== '0'
+/**
+ * 访客 IP 信任档位（auth.ts clientIp 优先读 CF-Connecting-IP / X-Forwarded-For，这里决定
+ * 哪些入站头可信、哪些剥掉后以可靠来源重新注入）：
+ *  - 'cf'    部署在 Cloudflare 橙云后：保留 CF-Connecting-IP（CF 边缘强制写入不可伪造），
+ *            剥掉 X-Forwarded-For / X-Real-IP（回落值也可伪造）
+ *  - 'proxy' 默认。本机自控反代（Caddy / Nginx）：剥掉入站 CF-Connecting-IP / X-Real-IP，
+ *            取 X-Forwarded-For 最后一跳作为访客 IP——反代把真实客户端 IP 追加在末尾，
+ *            客户端自己伪造的值都在前面，伪造不进来。要求前面确实有一层自控反代
+ *  - 'off'   Node 直接暴露公网：剥掉全部可伪造头，以 socket 远端地址注入
+ * 兼容旧值：'1' → proxy、'0' → off。客户端可任意伪造 CF-Connecting-IP 轮换 IP 绕过
+ * 登录 / 解锁 / 评论 / 点赞限流——档位与真实部署形态不符时代码帮不了你，见 README「访客 IP」
+ */
+const TRUST_PROXY_RAW = (process.env.TRUST_PROXY ?? 'proxy').toLowerCase()
+const TRUST_PROXY: 'cf' | 'proxy' | 'off' =
+  TRUST_PROXY_RAW === '1' ? 'proxy' : TRUST_PROXY_RAW === '0' ? 'off' : TRUST_PROXY_RAW === 'cf' || TRUST_PROXY_RAW === 'proxy' || TRUST_PROXY_RAW === 'off' ? (TRUST_PROXY_RAW as 'cf' | 'proxy' | 'off') : 'proxy'
 // 默认值按「打包产物在 server/dist/server.js」的层级推导：dist/../.. = 仓库根、
 // dist/.. = server/；Docker 里保持同样层级，仅 TENANTS_DIR 用环境变量指到挂载卷
 const PUBLIC_ROOT = path.resolve(process.env.PUBLIC_ROOT || path.resolve(__dirname, '../../public'))
@@ -205,6 +218,34 @@ function resolveScheme(headers: Headers, host: string): string {
   return xfp || 'http'
 }
 
+/** 按 TRUST_PROXY 档位重建访客 IP 头（与主仓库 docker-poc/server.ts 同一份实现） */
+function applyTrustProxy(headers: Headers, req: http.IncomingMessage): void {
+  if (TRUST_PROXY === 'cf') {
+    // Cloudflare 橙云后：CF-Connecting-IP 由边缘强制写入（保留），回落链上的头剥掉
+    headers.delete('x-forwarded-for')
+    headers.delete('x-real-ip')
+    return
+  }
+  headers.delete('x-real-ip')
+  headers.delete('cf-connecting-ip')
+  if (TRUST_PROXY === 'proxy') {
+    // 本机自控反代：反代把真实客户端 IP 追加在 XFF 末尾，客户端伪造的值都在前面；
+    // 无 XFF（直连）回落 socket 远端
+    const parts = (headers.get('x-forwarded-for') || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const ip = parts.length ? parts[parts.length - 1] : (req.socket.remoteAddress || '').replace(/^::ffff:/, '')
+    headers.delete('x-forwarded-for')
+    if (ip) headers.set('cf-connecting-ip', ip)
+    return
+  }
+  // off：Node 直接暴露公网，只有 socket 远端可信
+  headers.delete('x-forwarded-for')
+  const remote = (req.socket.remoteAddress || '').replace(/^::ffff:/, '')
+  if (remote) headers.set('cf-connecting-ip', remote)
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, tenants: Map<string, Tenant>, fallback?: Tenant) {
   const started = Date.now()
   const hostHeader = req.headers.host || 'localhost'
@@ -239,16 +280,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, tenan
     if (Array.isArray(value)) value.forEach((v) => headers.append(key, v))
     else headers.set(key, value)
   }
-  // 访客 IP 可信来源：默认 TRUST_PROXY=1 信任反代注入的头（CF-Connecting-IP / X-Forwarded-For）；
-  // Node 直接暴露公网时设 TRUST_PROXY=0——客户端可随意伪造上述头轮换 IP 绕过限流，
-  // 此时剥掉入站头、以 socket 远端地址注入 CF-Connecting-IP（auth.ts clientIp 优先读它，业务零改动）
-  if (!TRUST_PROXY) {
-    headers.delete('cf-connecting-ip')
-    headers.delete('x-forwarded-for')
-    headers.delete('x-real-ip')
-    const remote = (req.socket.remoteAddress || '').replace(/^::ffff:/, '')
-    if (remote) headers.set('cf-connecting-ip', remote)
-  }
+  // 访客 IP 可信来源按 TRUST_PROXY 三档处理（见顶部注释与 README「访客 IP」）：
+  // 登录 / 解锁 / 评论 / 点赞的限流都按 IP 分桶，档位配错等于限流敞开
+  applyTrustProxy(headers, req)
   const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
   const proto = resolveScheme(headers, url.host)
   const appReq = new Request(`${proto}://${hostHeader}${url.pathname}${url.search}`, {
