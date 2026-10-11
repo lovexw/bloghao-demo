@@ -16,7 +16,7 @@ import { randomToken, rateLimit, safeEqual } from './auth'
 import { getSettings, getWeiboById, saveSettings, WEIBO_MAX_CHARS, WEIBO_MAX_IMAGES } from './db'
 import { fireWeiboPublished } from './hooks'
 import { siteBase } from './render'
-import { imageExtOf, MAX_UPLOAD_BYTES, saveUpload } from './store'
+import { imageExtOf, MAX_UPLOAD_BYTES, saveUpload, sniffImageExt } from './store'
 import type { Env, SessionUser, SettingsMap, WeiboRow } from './types'
 import { excerpt, extractWeiboTopics, isDemo } from './utils'
 
@@ -51,11 +51,16 @@ async function insertWeibo(db: D1Database, content: string, images: string[], st
   return row
 }
 
-/** 图片字节进 R2 图床并登记 uploads 表，返回站内地址；类型/大小不过关返回 null */
+/** 图片字节进 R2 图床并登记 uploads 表，返回站内地址；类型/大小不过关返回 null。
+ *  魔数优先（同手动上传 sniffUploadExt / collect 转存口径）：TG 文件与 data URL 声明的
+ *  mime 不可全信，声明与内容不符按真实魔数落库；魔数认不出再退声明 mime 白名单 */
 async function storeImage(env: Env, buf: ArrayBuffer, mime: string, name: string): Promise<string | null> {
+  if (buf.byteLength === 0 || buf.byteLength > MAX_UPLOAD_BYTES) return null
+  const sniffed = sniffImageExt(buf)
+  if (sniffed) return saveUpload(env, buf, `image/${sniffed === 'jpg' ? 'jpeg' : sniffed}`, name, sniffed)
   mime = (mime || '').split(';')[0].trim().toLowerCase()
   const ext = imageExtOf(mime)
-  if (!ext || buf.byteLength === 0 || buf.byteLength > MAX_UPLOAD_BYTES) return null
+  if (!ext) return null
   return saveUpload(env, buf, mime, name, ext)
 }
 
@@ -296,7 +301,9 @@ export async function notifyAdminComment(env: Env, n: CommentNotice): Promise<vo
           : '💬 留言板有新留言'
     const flag = n.pending ? '⏳ 待审核 · ' : ''
     const link = n.siteBase ? `\n\n👉 ${n.siteBase}${n.path}` : ''
-    await notifyAdminText(env, `${head}\n${flag}来自 ${n.nickname}\n\n${content}${link}`)
+    // 待审时附一条后台深链：评论页支持 ?status=pending，手机上点开即到审核位
+    const admin = n.pending && n.siteBase ? `\n🛠 去审核：${n.siteBase}/admin/#/comments?status=pending` : ''
+    await notifyAdminText(env, `${head}\n${flag}来自 ${n.nickname}\n\n${content}${link}${admin}`)
   } catch {
     /* 通知失败不影响留言本身 */
   }
@@ -309,7 +316,7 @@ function helpText(chatId: string): string {
     '· 发图片（可带 caption）→ 图文微博，最多 9 张\n' +
     '· 一次多选几张发相册 → 自动合并成一条多图微博\n' +
     '· 消息开头写 /draft 可存为草稿\n' +
-    '· 正文里写 #话题# 照常归类\n\n' +
+    '· 正文里写 #话题 即可归类（成对 #话题# 也认）\n\n' +
     `你的 Chat ID：${chatId}\n` +
     '把它填到后台「设置 → 外部发布 → 允许发布的 Chat ID」即可授权。'
   )

@@ -19,6 +19,11 @@ import {
   pagerHtml,
   paywallHtml,
   plural,
+  yearStatsSuffix,
+  footCardHtml,
+  newSiteGuideHtml,
+  postNeighborsHtml,
+  heatmapHtml,
   rankListHtml,
   shareBtn,
   siteMode,
@@ -40,7 +45,7 @@ const id = 'midnight'
 /** 页脚公共件：八个页面只差链接组，结构统一在这里 */
 function foot(s: SettingsMap, links: string): string {
   const en = isEn(s)
-  return `<footer class="md-footer"><span>${esc(tr(en, s.footerText || ''))}</span><span>${footLinks(s, links)}</span></footer>`
+  return `<footer class="md-footer">${footCardHtml(s, en)}<span>${esc(tr(en, s.footerText || ''))}</span><span>${footLinks(s, links)}</span></footer>`
 }
 const FOOT_LINKS = {
   home: '<a href="/weibo">微博</a><a href="/rss.xml">RSS</a><a href="/admin">管理</a>',
@@ -97,6 +102,7 @@ export function home(d: HomeData): string {
     <p>${esc(tr(en, s.siteDescription))}</p>
   </section>
   ${d.notice ? `<div class="md-notice">${d.notice}</div>` : ''}
+  ${d.newSite ? newSiteGuideHtml(en) : ''}
   ${d.weiboFeed ? weiboHomeFeed({ settings: s, items: d.weiboFeed.items, total: d.weiboFeed.total, avatarHtml: logoMark(s), allowComments: d.weiboFeed.allowComments, adminName: d.weiboFeed.adminName, memberName: d.weiboFeed.memberName }) : ''}
   ${d.weibo ? weiboHomeEntry({ ...d.weibo, en }) : ''}
   ${onThisDayCard(d.onThisDay, en)}
@@ -140,6 +146,7 @@ export function post(d: PostData): string {
       <div class="md-tags">${d.category ? `<a class="md-chip" href="${categoryLink(d.category)}">${esc(d.category.name)}</a>` : ''}${p.tags.map((t) => `<a class="md-chip" href="${tagLink(t)}">${esc(t)}</a>`).join('')}</div>
     </div>
     ${related}
+    ${postNeighborsHtml(d.prev, d.next, en)}
     ${d.comments.html}
   </article>
   ${foot(d.settings, en ? FOOT_LINKS_EN.article : FOOT_LINKS.article)}
@@ -176,8 +183,9 @@ export function archives(d: ArchivesData): string {
   </header>
   <section class="md-hero md-hero-slim">
     <h1>${tr(en, '归档')}</h1>
-    <p>${d.total > 0 ? (en ? `// ${d.total} ${plural(d.total, 'post', 'posts')} · newest year first` : `// 共 ${d.total} 篇 · 按年份倒序`) : en ? '// Every post lands here' : '// 写下的每一篇都会收进这里'}</p>
+    <p>${d.total > 0 ? (en ? `// ${d.total} ${plural(d.total, 'post', 'posts')} · newest year first` : `// 共 ${d.total} 篇 · 按年份倒序`) : en ? '// Every post lands here' : '// 写下的每一篇都会收进这里'}${yearStatsSuffix(d.yearStats, en)}</p>
   </section>
+  ${heatmapHtml(d.heatmap, en)}
   <main class="md-archives">${archiveListHtml(d.groups, en) || `<p class="md-empty">${en ? 'The night log is still empty.' : '夜航日志还是空的。'}</p>`}</main>
   ${foot(s, en ? FOOT_LINKS_EN.home : FOOT_LINKS.home)}
 </div>`

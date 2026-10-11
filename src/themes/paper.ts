@@ -19,6 +19,11 @@ import {
   pagerHtml,
   paywallHtml,
   plural,
+  yearStatsSuffix,
+  footCardHtml,
+  newSiteGuideHtml,
+  postNeighborsHtml,
+  heatmapHtml,
   rankListHtml,
   shareBtn,
   siteMode,
@@ -40,14 +45,21 @@ const id = 'paper'
 /** 页脚公共件：八个页面只差链接组，结构统一在这里 */
 function foot(s: SettingsMap, links: string): string {
   const en = isEn(s)
-  return `<footer class="pp-footer">${esc(tr(en, s.footerText || ''))}<span class="pp-footer-links">${footLinks(s, links)}</span></footer>`
+  return `<footer class="pp-footer">${footCardHtml(s, en)}${esc(tr(en, s.footerText || ''))}<span class="pp-footer-links">${footLinks(s, links)}</span></footer>`
 }
 const FOOT_LINKS = {
   home: '<a href="/weibo">微博</a><a href="/about">关于我</a><a href="/rss.xml">RSS</a><a href="/admin">管理</a>',
   post: '<a href="/about">关于我</a><a href="/rss.xml">RSS</a><a href="/admin">管理</a>',
   archive: '<a href="/">回主页</a><a href="/weibo">微博</a><a href="/about">关于我</a><a href="/rss.xml">RSS</a><a href="/admin">管理</a>',
   weibo: '<a href="/">回主页</a><a href="/weibo">微博</a><a href="/rss.xml">RSS</a><a href="/admin">管理</a>',
-  about: '<a href="/">回主页</a><a href="/weibo">微博</a><a href="/guestbook">留言板</a><a href="/admin">管理</a>',
+}
+
+/** about 页页脚的中文链接组：排行榜/随机两个动态位与英文镜像 footLinksEn().about 同口径
+ *  （排行榜随 membersEnabled 门控，随机在纯微博模式收起），其余主题走 footLinks 静态组 */
+function footLinksAboutZh(s: SettingsMap): string {
+  const rank = s.membersEnabled === '1' ? '<a href="/rank">排行榜</a>' : ''
+  const random = siteMode(s) === 'weibo' ? '' : '<a href="/random">随机</a>'
+  return `<a href="/">回主页</a><a href="/weibo">微博</a><a href="/guestbook">留言板</a>${rank}${random}<a href="/admin">管理</a>`
 }
 
 /** 页脚链接组的英文测试版镜像（结构同 FOOT_LINKS，只换标签词） */
@@ -116,6 +128,7 @@ export function home(d: HomeData): string {
     <p class="pp-site-desc">${esc(tr(en, s.siteDescription))}</p>
   </header>
   ${d.notice ? `<div class="pp-notice">${d.notice}</div>` : ''}
+  ${d.newSite ? newSiteGuideHtml(en) : ''}
   ${d.weiboFeed ? weiboHomeFeed({ settings: s, items: d.weiboFeed.items, total: d.weiboFeed.total, avatarHtml: seal(s), allowComments: d.weiboFeed.allowComments, adminName: d.weiboFeed.adminName, memberName: d.weiboFeed.memberName }) : ''}
   ${d.weibo ? weiboHomeEntry({ ...d.weibo, en }) : ''}
   ${onThisDayCard(d.onThisDay, en)}
@@ -160,6 +173,7 @@ export function post(d: PostData): string {
       ${p.tags.map((t) => `<a class="pp-tag" href="${tagLink(t)}">${esc(t)}</a>`).join('')}
     </div>
     ${related}
+    ${postNeighborsHtml(d.prev, d.next, en)}
     ${d.comments.html}
   </article>
   ${foot(d.settings, en ? footLinksEn(d.settings).post : FOOT_LINKS.post)}
@@ -179,7 +193,7 @@ export function page(d: PageData): string {
     <h1 class="pp-title">${esc(d.title)}</h1>
     <div class="pp-body rich">${d.contentHtml}</div>
   </article>
-  ${foot(d.settings, en ? footLinksEn(d.settings).about : FOOT_LINKS.about)}
+  ${foot(d.settings, en ? footLinksEn(d.settings).about : footLinksAboutZh(d.settings))}
 </div>`
 }
 
@@ -191,8 +205,9 @@ export function archives(d: ArchivesData): string {
   ${siteNav({ mode: siteMode(d.settings), memberEnabled: d.settings.membersEnabled === '1', cls: 'pp-snav', categories: d.categories, tags: d.tags, pages: d.pages, active: 'archives', en })}
   <header class="wb-page-head">
     <h1 class="wb-page-title">${tr(en, '归档')}</h1>
-    <p class="wb-page-sub">${d.total > 0 ? (en ? `Every word keeps time · ${d.total} ${plural(d.total, 'post', 'posts')} in all` : `字字皆岁月 · 共 ${d.total} 篇`) : en ? 'Every post lands here.' : '写下的每一篇都会收进这里'}</p>
+    <p class="wb-page-sub">${d.total > 0 ? (en ? `Every word keeps time · ${d.total} ${plural(d.total, 'post', 'posts')} in all` : `字字皆岁月 · 共 ${d.total} 篇`) : en ? 'Every post lands here.' : '写下的每一篇都会收进这里'}${yearStatsSuffix(d.yearStats, en)}</p>
   </header>
+  ${heatmapHtml(d.heatmap, en)}
   <main class="pp-archives">${archiveListHtml(d.groups, en) || `<p class="wb-empty">${en ? 'The page is blank — a good time to start writing.' : '纸上还无字，正是落笔时。'}</p>`}</main>
   ${foot(s, en ? footLinksEn(s).archive : FOOT_LINKS.archive)}
 </div>`

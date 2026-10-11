@@ -19,6 +19,11 @@ import {
   pagerHtml,
   paywallHtml,
   plural,
+  yearStatsSuffix,
+  footCardHtml,
+  newSiteGuideHtml,
+  postNeighborsHtml,
+  heatmapHtml,
   rankListHtml,
   shareBtn,
   siteMode,
@@ -40,7 +45,7 @@ const id = 'minimal'
 /** 页脚公共件：八个页面只差链接组，结构统一在这里 */
 function foot(s: SettingsMap, links: string): string {
   const en = isEn(s)
-  return `<footer class="mn-footer"><span>${esc(tr(en, s.footerText || ''))}</span><span>${footLinks(s, links)}</span></footer>`
+  return `<footer class="mn-footer">${footCardHtml(s, en)}<span>${esc(tr(en, s.footerText || ''))}</span><span>${footLinks(s, links)}</span></footer>`
 }
 const FOOT_LINKS = {
   home: '<a href="/weibo">微博</a><a href="/rss.xml">RSS</a><a href="/admin">管理</a>',
@@ -92,6 +97,7 @@ export function home(d: HomeData): string {
   </header>
   <p class="mn-intro">${esc(tr(en, s.siteDescription))}</p>
   ${d.notice ? `<div class="mn-notice">${d.notice}</div>` : ''}
+  ${d.newSite ? newSiteGuideHtml(en) : ''}
   ${d.weiboFeed ? weiboHomeFeed({ settings: s, items: d.weiboFeed.items, total: d.weiboFeed.total, avatarHtml: avatar(s), allowComments: d.weiboFeed.allowComments, adminName: d.weiboFeed.adminName, memberName: d.weiboFeed.memberName }) : ''}
   ${d.weibo ? weiboHomeEntry({ ...d.weibo, en }) : ''}
   ${onThisDayCard(d.onThisDay, en)}
@@ -135,6 +141,7 @@ export function post(d: PostData): string {
       <div class="mn-tags">${d.category ? `<a href="${categoryLink(d.category)}">${esc(d.category.name)}</a>` : ''}${p.tags.map((t) => `<a href="${tagLink(t)}">${esc(t)}</a>`).join('')}</div>
     </div>
     ${related}
+    ${postNeighborsHtml(d.prev, d.next, en)}
     ${d.comments.html}
   </article>
   ${foot(d.settings, en ? FOOT_LINKS_EN.article : FOOT_LINKS.article)}
@@ -170,7 +177,8 @@ export function archives(d: ArchivesData): string {
     <nav class="mn-nav"><a class="mn-nav-link is-active" href="/archives">${tr(en, '归档')}</a><a class="mn-nav-link" href="/guestbook">${tr(en, '留言板')}</a><a class="mn-nav-link" href="/about">${tr(en, '关于我')}</a></nav>
   </header>
   <h1 class="mn-title mn-page-title">${tr(en, '归档')}</h1>
-  <p class="mn-intro">${d.total > 0 ? (en ? `${d.total} ${plural(d.total, 'post', 'posts')} · newest year first` : `共 ${d.total} 篇 · 按年份倒序`) : '写下的每一篇都会收进这里'}</p>
+  <p class="mn-intro">${d.total > 0 ? (en ? `${d.total} ${plural(d.total, 'post', 'posts')} · newest year first` : `共 ${d.total} 篇 · 按年份倒序`) : '写下的每一篇都会收进这里'}${yearStatsSuffix(d.yearStats, en)}</p>
+  ${heatmapHtml(d.heatmap, en)}
   <main class="mn-archives">${archiveListHtml(d.groups, en) || '<p class="mn-empty">Nothing here yet. Start writing.</p>'}</main>
   ${foot(s, en ? FOOT_LINKS_EN.home : FOOT_LINKS.home)}
 </div>`

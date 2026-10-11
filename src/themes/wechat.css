@@ -609,9 +609,28 @@ a.wx-account:hover { opacity: 0.75; }
 .wx-snav-member:hover { color: #fff; opacity: 0.88; }
 .wx-snav-member.is-active { color: #fff; }
 @media (max-width: 480px) {
-  .wx-snav { gap: 14px; }
+  /* 单行横滑（2026-10-11 修：会员开启时 RSS 图标成为最后一根稻草，会员药丸被 wrap 挤成孤儿行）——
+   * 一行装不下就横向轻扫，滚动条隐藏；「分类话题」下拉菜单转 fixed 逃出滚动容器的裁剪
+   * （overflow-x:auto 会把 overflow-y 连带算成 auto，absolute 子菜单会被剪掉） */
+  .wx-snav {
+    gap: 14px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .wx-snav::-webkit-scrollbar { display: none; }
+  .wx-snav > * { flex: 0 0 auto; }
   .wx-snav-link { font-size: 13.5px; }
   .wx-snav-member { font-size: 12.5px; padding: 4.5px 12px; }
+  .wx-snav-dd[open] .wx-snav-menu {
+    position: fixed;
+    top: 56px;
+    left: 14px;
+    right: 14px;
+    min-width: 0;
+    max-width: none;
+  }
 }
 
 /* 「分类话题」折叠菜单：details/summary 原生折叠，site.js 只负责点外部收起 */
@@ -703,7 +722,7 @@ a.wx-account:hover { opacity: 0.75; }
   font-size: 11px; line-height: 1; padding: 4px 9px; border-radius: 999px;
   color: var(--wx-accent); background: rgba(178, 58, 41, 0.07); letter-spacing: 0.05em;
 }
-.wb-topic { color: var(--wx-accent); }
+.wb-topic { color: var(--wx-accent); background: rgba(178, 58, 41, 0.07); border-radius: 4px; padding: 1px 5px; }
 .wb-link { color: var(--wx-accent); }
 .wb-text a.wb-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .wb-text a.wb-topic:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -918,3 +937,134 @@ a.wx-account:hover { opacity: 0.75; }
 .paywall-title { margin: 10px 0 6px; font-size: 15.5px; font-weight: 600; color: #1a1a1a; }
 .paywall-text { margin: 0 0 16px; font-size: 13.5px; line-height: 1.7; color: var(--wx-sub); }
 .paywall-cta { display: inline-block; padding: 10px 26px; border-radius: 999px; background: var(--wx-accent); color: #fff; font-size: 14px; font-weight: 600; text-decoration: none; }
+
+/* ---------- 桌面端增强（≥1024px 两栏；移动端 DOM 存在但 CSS 隐藏，版式零变化） ----------
+ * 首页：正文列（微博流/时光机/搜索/列表/翻页）+ 右侧栏（话题云/分类）
+ * 文章页：正文列 + 右侧栏（目录锚点 + 文章信息卡），目录锚点 id 由 wechat.ts tocOf 渲染期注入
+ */
+html { scroll-behavior: smooth; }
+.rich h2, .rich h3 { scroll-margin-top: 64px; } /* 让位吸顶导航（约 47px）+ 呼吸空隙 */
+.wx-cols { display: block; }
+.wx-side { display: none; }
+.wx-side-card {
+  background: var(--wx-card);
+  border: 1px solid var(--wx-line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(43, 36, 25, 0.04);
+}
+.wx-side-card + .wx-side-card { margin-top: 14px; }
+.wx-side-title {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font-size: 14px; font-weight: 600; color: #1a1a1a;
+  margin-bottom: 10px;
+}
+.wx-side-sub { font-size: 12px; font-weight: 400; color: #b5aea1; font-variant-numeric: tabular-nums; }
+.wx-side-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.wx-side-chip {
+  font-size: 12.5px; line-height: 1; color: var(--wx-text); white-space: nowrap;
+  padding: 6px 11px; border: 1px solid var(--wx-line); border-radius: 999px; background: var(--wx-bg);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.wx-side-chip i { font-style: normal; font-size: 11px; opacity: 0.55; margin-left: 3px; font-variant-numeric: tabular-nums; }
+.wx-side-chip:hover { color: var(--wx-accent); border-color: var(--wx-accent); }
+.wx-side-rows .wx-side-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  padding: 8px 2px; font-size: 13.5px; color: var(--wx-text);
+  border-bottom: 1px dashed var(--wx-line);
+}
+.wx-side-rows .wx-side-row:first-child { padding-top: 2px; }
+.wx-side-rows .wx-side-row:last-child { border-bottom: none; padding-bottom: 2px; }
+.wx-side-row span { flex: 0 0 auto; font-size: 12.5px; color: #b5aea1; }
+.wx-side-row b { font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; }
+.wx-side-row a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s ease; }
+.wx-side-row a:hover { color: var(--wx-accent); }
+/* 文章目录：左竖线层级导航，锚点平滑滚动（html scroll-behavior） */
+.wx-toc { display: flex; flex-direction: column; }
+.wx-toc a {
+  font-size: 13px; line-height: 1.5; color: #6e675e;
+  padding: 5px 0 5px 12px;
+  border-left: 2px solid var(--wx-line);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.wx-toc a:hover { color: var(--wx-accent); border-left-color: var(--wx-accent); }
+.wx-toc a.is-current { color: var(--wx-accent); border-left-color: var(--wx-accent); font-weight: 500; }
+
+/* ---------- 阅读工具条：导航吸顶（下滚收起 / 上滑浮现，site.js 切 xw-nav-hide） ---------- */
+.wx-snav {
+  position: sticky; top: 0; z-index: 60;
+  background: var(--wx-bg);
+  transition: transform 0.25s ease;
+}
+.wx-snav.xw-nav-hide { transform: translateY(-100%); }
+.wx-toc-lv3 { padding-left: 26px; font-size: 12.5px; color: #978f82; }
+@media (min-width: 1024px) {
+  .wx-page-wide, .wx-article-wide { max-width: 1120px; }
+  .wx-cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    column-gap: 56px;
+    align-items: start;
+  }
+  .wx-side {
+    display: block;
+    position: sticky; top: 24px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: #d8d0c2 transparent;
+    overscroll-behavior: contain;
+  }
+  .wx-side::-webkit-scrollbar { width: 6px; }
+  .wx-side::-webkit-scrollbar-thumb { background: #d8d0c2; border-radius: 3px; }
+}
+
+/* ---------- 上一篇/下一篇（.pn-* 结构由 render.ts postNeighborsHtml 输出，主题自调色） ---------- */
+.pn-nav { display: flex; gap: 12px; margin: 26px 0 0; }
+.pn-cell {
+  flex: 1; min-width: 0; display: block;
+  padding: 12px 14px;
+  border: 1px solid var(--wx-line);
+  border-radius: 14px;
+  background: var(--wx-card);
+  text-decoration: none;
+}
+.pn-next { text-align: right; }
+.pn-empty { pointer-events: none; border-style: dashed; opacity: 0.55; }
+.pn-label { display: block; font-size: 12px; color: var(--wx-sub); margin-bottom: 4px; }
+.pn-title {
+  display: block; font-size: 13.5px; font-weight: 500; color: var(--wx-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color 0.15s ease;
+}
+.pn-cell:hover .pn-title { color: var(--wx-accent); }
+
+/* ---------- 创作热力图（.hm-* 结构由 render.ts heatmapHtml 输出）：色阶 = accent 透明度四档 ---------- */
+.hm { margin: 2px 0 26px; }
+.hm-scroll { overflow-x: auto; }
+.hm-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 9px; grid-template-rows: 13px repeat(7, 9px); gap: 2px; width: max-content; padding: 2px 0; }
+.hm-month { font-size: 9.5px; line-height: 13px; color: var(--wx-sub); white-space: nowrap; }
+.hm-cell { width: 9px; height: 9px; border-radius: 2px; background: var(--wx-line); }
+.hm-l1 { background: var(--wx-accent); opacity: 0.30; }
+.hm-l2 { background: var(--wx-accent); opacity: 0.55; }
+.hm-l3 { background: var(--wx-accent); opacity: 0.78; }
+.hm-l4 { background: var(--wx-accent); }
+.hm-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0 0; font-size: 11px; color: var(--wx-sub); }
+.hm-legend { display: inline-flex; align-items: center; gap: 3px; }
+
+/* 阅读工具条进度条填充色（site.js 注入 .xw-readbar-fill，几何内联） */
+.xw-readbar-fill { background: var(--wx-accent); }
+
+/* 归档年份吸顶：长列表滚动时当前年份钉在页首（wechat 主题被吸顶导航 z-index 压住，导航收起后即到顶） */
+.ar-year { position: sticky; top: 0; z-index: 5; background: var(--wx-bg); }
+
+/* ---------- 页脚站点名片（.fc-* 结构由 render.ts footCardHtml 输出） ---------- */
+.fc { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; justify-content: space-between; padding: 16px 0 14px; border-bottom: 1px solid var(--wx-line); text-align: left; }
+.fc-id { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.fc-avatar { width: 38px; height: 38px; flex: none; border-radius: 50%; overflow: hidden; background: var(--wx-line); display: inline-flex; align-items: center; justify-content: center; color: var(--wx-accent); font-weight: 700; font-size: 16px; }
+.fc-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fc-main { min-width: 0; display: flex; flex-direction: column; }
+.fc-name { font-size: 13.5px; font-weight: 600; color: var(--wx-text); }
+.fc-desc { font-size: 12px; color: var(--wx-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.fc-stats { font-size: 12px; color: var(--wx-sub); font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { .fc-stats { text-align: left; } }

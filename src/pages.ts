@@ -8,7 +8,10 @@ import {
   getPostBySlug,
   getPostCategoryId,
   getSettings,
+  adjacentPosts,
   listAllPublishedArchives,
+  postHeatmap,
+  yearArchiveStats,
   listApprovedComments,
   listCategories,
   listFriendLinks,
@@ -33,6 +36,7 @@ import { searchPosts, searchWeibo } from './fts'
 import {
   articleJsonLd,
   archiveGroups,
+  headingAnchors,
   commentsHtml,
   HOME_SORTS,
   isEn,
@@ -408,6 +412,14 @@ async function renderList(
     notice,
     emptyText,
     weiboFeed,
+    // 新站引导（仅真首页）：一篇文章都没有、也没有微博时，首页出「三步开张」引导卡
+    newSite:
+      opts.mode === 'home' &&
+      !tag &&
+      r.page === 1 &&
+      r.total === 0 &&
+      !weibo &&
+      !(weiboFeed && weiboFeed.items.length),
     // 搜索页微博结果（ROADMAP B4）：仅 /search 带关键词且有命中时非空
     searchWeibo: searchWeiboView,
     // 纯博客模式：历史上的今天只保留文章条目（微博模块已隐藏）
@@ -443,7 +455,7 @@ export async function renderPost(c: C): Promise<Response> {
     if (!isPreview || !user) return renderNotFound(c)
   }
 
-  const [comments, related, categories, categoryId, user, tags, pages, commentTotal, member] = await Promise.all([
+  const [comments, related, categories, categoryId, user, tags, pages, commentTotal, member, neighbors] = await Promise.all([
     listApprovedComments(c.env.DB, row.id),
     relatedPosts(c.env.DB, row),
     navCategories(c),
@@ -455,11 +467,17 @@ export async function renderPost(c: C): Promise<Response> {
     commentCount(c, row.id),
     // 会员会话（付费墙可见判定用；membersEnabled 关闭时不查——关着的时候锁文对所有人生效）
     membersEnabled(settings) ? getMemberUser(c.env.DB, c.req.raw) : Promise.resolve(null),
+    // 上一篇/下一篇（prev = 更早、next = 更新）：草稿预览不出
+    row.status === 'published'
+      ? adjacentPosts(c.env.DB, row.published_at ?? row.created_at, row.id)
+      : Promise.resolve({ prev: null, next: null }),
   ])
   const categoryRow = categoryId ? await c.env.DB.prepare('SELECT name, slug FROM categories WHERE id = ?').bind(categoryId).first<{ name: string; slug: string }>() : null
 
-  // 分享按钮数据：canonical 绝对链接（后台站点链接优先，回退请求 origin）+ 链接的 QR 矩阵位串
-  const share = { url: `${siteBase(settings, url.origin)}/post/${row.slug}`, qr: '' }
+  // 分享按钮数据：canonical 绝对链接（后台站点链接优先，回退请求 origin）+ 链接的 QR 矩阵位串。
+  // slug 百分号编码与 RSS/sitemap 同口径（中文 slug 是非 ASCII IRI，两套输出必须一致）
+  const postPath = `/post/${encodeURIComponent(row.slug)}`
+  const share = { url: `${siteBase(settings, url.origin)}${postPath}`, qr: '' }
   const shareQr = qrMatrix(share.url)
   if (shareQr) share.qr = packMatrix(shareQr)
 
@@ -499,13 +517,18 @@ export async function renderPost(c: C): Promise<Response> {
     en,
   })
 
+  // 正文 HTML：密码墙出解锁表单，locked 只下发试读段；标题锚点由 render.ts headingAnchors 对
+  // 七主题统一注入 toc-N 生成 id（wechat 主题目录卡与 site.js 标题 ¶ 同源），密码墙正文零参与
+  const bodyHtml = pwLocked ? passwordFormHtml(row.slug, { error: lockedError, en }) : locked ? teaserHtml(fullHtml) : fullHtml
+  const anchored = pwLocked ? { html: bodyHtml, items: [] } : headingAnchors(bodyHtml)
+
   const html = theme.post({
     settings,
     post: {
       slug: row.slug,
       title: row.title,
       // 封面图与正文首图重复时渲染正文去掉首图，避免一图两现；密码墙出解锁表单，locked 只下发试读段
-      contentHtml: pwLocked ? passwordFormHtml(row.slug, { error: lockedError, en }) : locked ? teaserHtml(fullHtml) : fullHtml,
+      contentHtml: anchored.html,
       summary: row.summary,
       cover: row.cover,
       tags: parseTags(row),
@@ -522,11 +545,15 @@ export async function renderPost(c: C): Promise<Response> {
     pages,
     comments: { html: commentsBlock, count: commentTotal },
     related: related.map((p) => toHomePost(p, parseTags(p))),
+    prev: neighbors.prev,
+    next: neighbors.next,
+    headings: anchored.items,
     share,
   })
   c.header('Cache-Control', 'no-cache')
-  // 分享卡图优先：编辑器生成的 OG 卡图 > 封面图；密码墙时不从正文提取（正文零参与）
-  const ogImage = pwLocked ? row.cover || undefined : extractOgImage(sanitizeHtml(row.content)) || row.cover || undefined
+  // 分享卡图优先：编辑器生成的 OG 卡图 > 封面图；密码墙与会员锁文都不从正文提取——
+  // OG 标记可能位于试读段之后，锁文状态的社交卡图只出作者主动设置的封面（防泄漏清单同口径）
+  const ogImage = pwLocked || locked ? row.cover || undefined : extractOgImage(sanitizeHtml(row.content)) || row.cover || undefined
   // 密码墙的描述走 protectedDescription：作者自填摘要照常公开，绝不把 excerpt(row.content) 泄进 meta / JSON-LD
   const metaDescription = pwLocked ? protectedDescription(row.summary, en) : row.summary || excerpt(row.content, 120)
   const base = siteBase(settings, url.origin)
@@ -538,7 +565,7 @@ export async function renderPost(c: C): Promise<Response> {
         title: row.title,
         description: metaDescription,
         image: ogImage,
-        url: `${base}/post/${row.slug}`,
+        url: `${base}${postPath}`,
         base,
         publishedAt: row.published_at,
         updatedAt: row.updated_at,
@@ -552,7 +579,7 @@ export async function renderPost(c: C): Promise<Response> {
       title: row.title,
       description: metaDescription,
       ogImage,
-      path: `/post/${row.slug}`,
+      path: postPath,
       origin: url.origin,
       noindex: isPreview,
       jsonLd,
@@ -663,11 +690,13 @@ export async function renderArchive(c: C): Promise<Response> {
   const settings = await getSettings(c.env.DB)
   const theme = getTheme(settings.theme)
   const en = isEn(settings)
-  const [rows, categories, tags, pages] = await Promise.all([
+  const [rows, categories, tags, pages, yearStats, heatmap] = await Promise.all([
     listAllPublishedArchives(c.env.DB),
     navCategories(c),
     navTags(c),
     navPages(c),
+    yearArchiveStats(c.env.DB),
+    postHeatmap(c.env.DB),
   ])
   const html = theme.archives({
     settings,
@@ -676,6 +705,8 @@ export async function renderArchive(c: C): Promise<Response> {
     pages,
     total: rows.length,
     groups: archiveGroups(rows),
+    yearStats,
+    heatmap,
   })
   c.header('Cache-Control', 'no-cache')
   return c.html(
@@ -1008,7 +1039,10 @@ export async function renderNotFound(c: C): Promise<Response> {
       body: `<div style="max-width:480px;margin:18vh auto 0;padding:0 24px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;">
   <div style="font-size:64px;font-weight:700;letter-spacing:.05em;">404</div>
   <p style="color:#999;margin:12px 0 28px;">${en ? 'This page wandered off. Head back home?' : '这一页飘走了，回首页看看吧。'}</p>
-  <a href="/" style="display:inline-block;padding:10px 28px;border-radius:999px;background:#b23a29;color:#fff;text-decoration:none;font-size:14px;">${en ? 'Back to Home' : '回首页'}</a>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+    <a href="/" style="display:inline-block;padding:10px 28px;border-radius:999px;background:#b23a29;color:#fff;text-decoration:none;font-size:14px;">${en ? 'Back to Home' : '回首页'}</a>
+    <a href="/random" style="display:inline-block;padding:10px 24px;border-radius:999px;border:1px solid #d9d2c7;color:#666;text-decoration:none;font-size:14px;">${en ? '🎲 Surprise me' : '🎲 随机一篇'}</a>
+  </div>
 </div>`,
     })),
     404

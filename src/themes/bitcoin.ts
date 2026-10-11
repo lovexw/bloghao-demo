@@ -20,6 +20,11 @@ import {
   pagerHtml,
   paywallHtml,
   plural,
+  yearStatsSuffix,
+  footCardHtml,
+  newSiteGuideHtml,
+  postNeighborsHtml,
+  heatmapHtml,
   rankListHtml,
   shareBtn,
   siteMode,
@@ -50,7 +55,7 @@ const BTC_LOGO =
 function foot(s: SettingsMap, links: string): string {
   const en = isEn(s)
   return `<footer class="bt-footer">
-  <div class="bt-footer-row"><span>${esc(tr(en, s.footerText || ''))}</span><span class="bt-footer-links">${footLinks(s, links)}</span></div>
+  ${footCardHtml(s, en)}<div class="bt-footer-row"><span>${esc(tr(en, s.footerText || ''))}</span><span class="bt-footer-links">${footLinks(s, links)}</span></div>
   <p class="bt-footer-motto">${BTC_LOGO}Don&#39;t trust, verify.</p>
 </footer>`
 }
@@ -109,6 +114,7 @@ export function home(d: HomeData): string {
     <p class="bt-hero-lead">${esc(tr(en, s.siteDescription))}</p>
   </header>
   ${d.notice ? `<div class="bt-notice">${d.notice}</div>` : ''}
+  ${d.newSite ? newSiteGuideHtml(en) : ''}
   ${d.weiboFeed ? weiboHomeFeed({ settings: s, items: d.weiboFeed.items, total: d.weiboFeed.total, avatarHtml: mark(s), allowComments: d.weiboFeed.allowComments, adminName: d.weiboFeed.adminName, memberName: d.weiboFeed.memberName }) : ''}
   ${d.weibo ? weiboHomeEntry({ ...d.weibo, en }) : ''}
   ${onThisDayCard(d.onThisDay, en)}
@@ -153,6 +159,7 @@ export function post(d: PostData): string {
       <div class="bt-tags">${d.category ? `<a href="${categoryLink(d.category)}">${esc(d.category.name)}</a>` : ''}${p.tags.map((t) => `<a href="${tagLink(t)}">${esc(t)}</a>`).join('')}</div>
     </div>
     ${related}
+    ${postNeighborsHtml(d.prev, d.next, en)}
     ${d.comments.html}
   </article>
   ${foot(d.settings, en ? FOOT_LINKS_EN.article : FOOT_LINKS.article)}
@@ -189,7 +196,8 @@ export function archives(d: ArchivesData): string {
     <nav class="bt-nav"><a class="bt-nav-link is-active" href="/archives">${tr(en, '归档')}</a><a class="bt-nav-link" href="/guestbook">${tr(en, '留言板')}</a><a class="bt-nav-link" href="/about">${tr(en, '关于我')}</a></nav>
   </header>
   <h1 class="bt-title bt-page-title">${tr(en, '归档')}</h1>
-  <p class="bt-page-sub">${d.total > 0 ? (en ? `${d.total} ${plural(d.total, 'post', 'posts')} · newest year first` : `共 ${d.total} 篇 · 按年份倒序`) : en ? 'Every post lands here.' : '写下的每一篇都会收进这里'}</p>
+  <p class="bt-page-sub">${d.total > 0 ? (en ? `${d.total} ${plural(d.total, 'post', 'posts')} · newest year first` : `共 ${d.total} 篇 · 按年份倒序`) : en ? 'Every post lands here.' : '写下的每一篇都会收进这里'}${yearStatsSuffix(d.yearStats, en)}</p>
+  ${heatmapHtml(d.heatmap, en)}
   <main class="bt-archives">${archiveListHtml(d.groups, en) || '<p class="bt-empty">Nothing here yet. Start writing.</p>'}</main>
   ${foot(s, en ? FOOT_LINKS_EN.home : FOOT_LINKS.home)}
 </div>`

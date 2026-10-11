@@ -29,6 +29,12 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // blog（纯博客）/ weibo（纯微博）——前台模块显隐与首页优先级，见 src/render.ts siteMode()
   siteMode: 'blog-weibo',
   siteUrl: '',
+  // 主题外观变量（B9 · 内测）：扁平 JSON（角色键 → 色值 + font/fontSize），渲染期按当前主题
+  // 映射回主题自己的 CSS 变量输出覆盖样式，空串 = 未配置，机制见 src/appearance.ts
+  appearance: '',
+  // 页脚「站点足迹」统计 JSON（{posts,chars,since}）：每晚 cron 刷新 + 冷启动首次播种
+  // （refreshFootStats），前台页脚名片读这里——展示口径滞后一夜可接受，不值得每次渲染都聚合
+  siteFoot: '',
   footerText: '由 博客号 驱动 · 住在 Cloudflare 上',
   allowComments: '1',
   moderateComments: '0',
@@ -51,8 +57,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   backupEnabled: '1',
   // 访客统计采集开关（后台「统计」页；关闭后前台不打点，见 src/stats.ts）
   statsEnabled: '1',
-  // 编辑器插件停用名单（后台「插件」页；逗号分隔的 manifest id，空 = 全部启用）
-  pluginsDisabled: '',
+  // 编辑器插件停用名单（后台「插件」页；逗号分隔的 manifest id，空 = 全部启用）。
+  // 书影音卡片（douban-media，个人定制插件）默认停用：豆瓣详情从数据中心 IP 取评分
+  // 不稳定，等有更稳的数据路子再默认启用——后台「插件」页一键开启
+  pluginsDisabled: 'douban-media',
   // 服务端插件停用名单（后台「插件」页；逗号分隔的插件 id，空 = 全部启用，见 src/hooks.ts）
   serverPluginsDisabled: '',
   // 服务端插件配置：发布同步 TG 频道的频道 ID / 评论 Webhook 地址 / 页脚自定义 HTML（src/hooks.ts）
@@ -62,8 +70,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // 服务端插件「微博同步 Buffer」：Buffer API Key 与目标渠道 ID（X 等，设置页可一键拉取，src/hooks.ts）
   bufferAccessToken: '',
   bufferChannelId: '',
-  // 服务端插件「广场同步」：广场 hub 地址（默认官方 https://plaza.bloghao.com）与站点注册 token（src/hooks.ts，docs/PLAZA.md）
-  plazaEndpoint: 'https://plaza.bloghao.com',
+  // 服务端插件「广场同步」：广场 hub 地址（默认官方 https://bloghao.com/plaza）与站点注册 token（src/hooks.ts，docs/PLAZA.md）
+  plazaEndpoint: 'https://bloghao.com/plaza',
   plazaToken: '',
   // 一键灰度（哀悼/纪念模式）：所有公开页 CSS 去色，见 src/render.ts page()
   siteGrayscale: '0',
@@ -203,6 +211,12 @@ export async function getPostById(db: D1Database, id: number): Promise<PostRow |
   return db.prepare('SELECT * FROM posts WHERE id = ?').bind(id).first<PostRow>()
 }
 
+/** 后台文章出参：password_hash 永不出接口（明文不可逆，哈希也不该喂给前端），只给 hasPassword 布尔。
+ *  放 db.ts 让 api.ts 与 collect.ts（采集草稿响应）共用同一出口，新出参一律过这里 */
+export function postAdminView(row: PostRow & { tagList?: string[]; categoryId?: number | null }) {
+  return { ...row, password_hash: undefined, hasPassword: !!row.password_hash }
+}
+
 /** slug 查重公共件：posts / pages 同一套「占用即加后缀」探测（categories 是重名即拒绝语义，不走这里）。
  *  table 只来自下方两个包装函数的字面量，无注入面。
  *  故意不过滤 deleted_at：回收站行继续占用 slug，恢复时不会撞上后来新建的同名 slug */
@@ -250,6 +264,54 @@ export async function listAllPublishedArchives(db: D1Database): Promise<{ slug: 
     )
     .all<{ slug: string; title: string; ts: number }>()
   return results ?? []
+}
+
+/** 归档页「今年已写」统计：当前北京时间年份的已发布篇数与正文字符量。
+ * LENGTH() 对 TEXT 计字符数，含 Markdown 标记——展示口径用「约」；年份聚合按惯例 +28800 取北京墙上年 */
+export async function yearArchiveStats(db: D1Database): Promise<{ count: number; chars: number }> {
+  const year = String(cstDate(Date.now()).getUTCFullYear())
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS c FROM posts WHERE status = 'published' AND deleted_at IS NULL AND strftime('%Y', COALESCE(published_at, created_at) / 1000 + 28800, 'unixepoch') = ?"
+    )
+    .bind(year)
+    .first<{ n: number; c: number }>()
+  return { count: row?.n ?? 0, chars: row?.c ?? 0 }
+}
+
+/** 归档页创作热力图数据：过去一年（约 366 天）按北京日聚合的已发布篇数。
+ * 只返回有文章的日期（空日由渲染端补零），total 为合计；日聚合按惯例 +28800 取北京墙上年月日 */
+export async function postHeatmap(db: D1Database): Promise<{ days: { day: string; count: number }[]; total: number }> {
+  const since = Date.now() - 366 * 86_400_000
+  const { results } = await db
+    .prepare(
+      "SELECT strftime('%Y-%m-%d', COALESCE(published_at, created_at) / 1000 + 28800, 'unixepoch') AS day, COUNT(*) AS n FROM posts WHERE status = 'published' AND deleted_at IS NULL AND COALESCE(published_at, created_at) >= ? GROUP BY day"
+    )
+    .bind(since)
+    .all<{ day: string; n: number }>()
+  const days = (results ?? []).map((r) => ({ day: r.day, count: r.n }))
+  return { days, total: days.reduce((sum, d) => sum + d.count, 0) }
+}
+
+/** 相邻文章（PostData.prev / next）：prev = 更早一篇、next = 更新一篇，口径与列表一致（published、未删）；
+ * 锚点用 COALESCE(published_at, created_at)，与归档分组同口径 */
+export async function adjacentPosts(
+  db: D1Database,
+  ts: number,
+  id: number
+): Promise<{ prev: { slug: string; title: string } | null; next: { slug: string; title: string } | null }> {
+  const where = "FROM posts WHERE status = 'published' AND deleted_at IS NULL AND id != ? AND COALESCE(published_at, created_at)"
+  const [prev, next] = await Promise.all([
+    db
+      .prepare(`SELECT slug, title ${where} < ? ORDER BY COALESCE(published_at, created_at) DESC LIMIT 1`)
+      .bind(id, ts)
+      .first<{ slug: string; title: string }>(),
+    db
+      .prepare(`SELECT slug, title ${where} > ? ORDER BY COALESCE(published_at, created_at) ASC LIMIT 1`)
+      .bind(id, ts)
+      .first<{ slug: string; title: string }>(),
+  ])
+  return { prev: prev ?? null, next: next ?? null }
 }
 
 /** sitemap 用的轻量列表：slug + updated_at（不走 listPosts——它的 limit 被 clamp 到 100） */
@@ -780,6 +842,8 @@ const SCHEMA_TABLES = [
     updated_at  INTEGER NOT NULL
   )`,
   // 独立页面（src/pages.ts renderPage）：自建页面 + 「关于我」（slug = 'about'，见 ensureSchema 末尾的一次性播种）
+  // deleted_at 必须与 schema.sql 同步在列：ensureSchema 先跑 SCHEMA_COLUMNS 的 ALTER 再建表，
+  // 全新库上 ALTER 撞「no such table」被吞，CREATE 漏列会让本 isolate 内所有 pages 查询 500
   `CREATE TABLE IF NOT EXISTS pages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     title       TEXT    NOT NULL,
@@ -789,7 +853,8 @@ const SCHEMA_TABLES = [
     show_in_nav INTEGER NOT NULL DEFAULT 0,
     sort        INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    deleted_at  INTEGER
   )`,
   // 访客统计日志（src/stats.ts）：只存匿名 vid 与来源域名，不进备份，保留 180 天
   `CREATE TABLE IF NOT EXISTS visit_log (
@@ -808,7 +873,8 @@ const SCHEMA_TABLES = [
   // trigram 分词适配中文。虚表可以进 schema.sql（单条无分号体）；触发器只能在这里挂——
   // demo.ts 的 ensureTables 按分号朴素切分 SQL，切不开 CREATE TRIGGER 的 BEGIN...END 体，
   // 而 ensureSchema 是所有部署形态（生产 / 本地 / 演示）每次冷启动都会跑的通用迁移路径。
-  // 虚表是可重建的派生索引：不进 BACKUP_TABLES，恢复备份后靠 ftsSeeded 记账位触发全量重建。
+  // 虚表是可重建的派生索引：不进 BACKUP_TABLES，恢复备份后靠 ftsSeeded 记账位触发全量重建
+  // （ftsSeeded 本身会随 settings 一起被备份带回，ensureSchema 里另有空索引自愈探测兜底）
   `CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(title, summary, content, tokenize='trigram', content='posts', content_rowid='id')`,
   `CREATE VIRTUAL TABLE IF NOT EXISTS weibo_fts USING fts5(content, tokenize='trigram', content='weibo', content_rowid='id')`,
 ]
@@ -897,11 +963,17 @@ export async function ensureSchema(db: D1Database): Promise<void> {
     }
   }
   // FTS 全量重建记账（src/fts.ts）：external content 虚表建出来时倒排索引是空的，
-  // 存量数据必须 rebuild 一次才可搜。settings 记账位保证只跑一回（幂等：备份恢复、
-  // demo 清库重灌后 key 随 settings 消失，下一次冷启动会自动补重建）。触发器要在场才能
-  // 保证增量，所以这步必须排在 SCHEMA_TRIGGERS 之后。
-  const ftsSeeded = await db.prepare("SELECT value FROM settings WHERE key = 'ftsSeeded'").first<{ value: string }>()
-  if (!ftsSeeded) {
+  // 存量数据必须 rebuild 一次才可搜。settings 记账位保证只跑一回；记账位在场也复核一次
+  // 索引非空——备份把 settings 原样带走又整体恢复时 ftsSeeded 会跟着回来，落到空索引的库
+  // 会让 ≥3 码点搜索静默无结果，这一探测兜住所有恢复路径（posts_fts_docsize 每个已索引
+  // 文档恰好一行，空索引恒为 0；直接查 posts_fts 读的是原表，测不出索引空）。触发器要在场
+  // 才能保证增量，所以这步必须排在 SCHEMA_TRIGGERS 之后。
+  let needFtsRebuild = !(await db.prepare("SELECT value FROM settings WHERE key = 'ftsSeeded'").first<{ value: string }>())
+  if (!needFtsRebuild) {
+    const docsize = await db.prepare('SELECT COUNT(*) AS n FROM posts_fts_docsize').first<{ n: number }>().catch(() => ({ n: 0 }))
+    needFtsRebuild = !docsize || docsize.n === 0
+  }
+  if (needFtsRebuild) {
     try {
       await db.prepare("INSERT INTO posts_fts(posts_fts) VALUES('rebuild')").run()
       await db.prepare("INSERT INTO weibo_fts(weibo_fts) VALUES('rebuild')").run()
@@ -935,6 +1007,24 @@ export async function ensureSchema(db: D1Database): Promise<void> {
       /* 并发 isolate 已处理：不记账也无碍，下次冷启动重试 */
     }
   }
+  // 页脚「站点足迹」统计冷启动播种：键缺失（新装/老站升级）时算一次，此后交给每晚 cron 刷新。
+  // upsert 幂等，并发 isolate 重复算也只是同值覆盖
+  const footRow = await db.prepare("SELECT value FROM settings WHERE key = 'siteFoot'").first()
+  if (!footRow) await refreshFootStats(db).catch(() => {})
+}
+
+/** 页脚「站点足迹」统计：累计已发布篇数 / 正文字符量 / 最早发文时间（北京年口径）。
+ * 每晚备份 cron 刷新一次 + 冷启动首次播种（键缺失时），页脚名片读 settings.siteFoot */
+export async function refreshFootStats(db: D1Database): Promise<void> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS c, COALESCE(MIN(COALESCE(published_at, created_at)), 0) AS since FROM posts WHERE status = 'published' AND deleted_at IS NULL"
+    )
+    .first<{ n: number; c: number; since: number }>()
+  await db
+    .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .bind('siteFoot', JSON.stringify({ posts: row?.n ?? 0, chars: row?.c ?? 0, since: row?.since ?? 0 }))
+    .run()
 }
 
 export async function countUsers(db: D1Database): Promise<number> {

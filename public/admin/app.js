@@ -734,7 +734,7 @@ async function viewWeibo() {
     `<div class="page-head"><div><div class="page-title">微博</div><div class="page-sub">随手记：短文字 + 图片，不用起标题</div></div></div>
     <div class="panel wb-composer">
       <textarea class="textarea wb-input" id="wb-content" maxlength="${WB_MAX_CHARS}" placeholder="有什么新鲜事？">${esc(wbEditing?.content || '')}</textarea>
-      <div class="wb-hint">支持 ⌘/Ctrl+V 粘贴截图、把图片拖进来，或点下方「加图」；正文里写 #话题# 可归类，如 #晚餐日记#</div>
+      <div class="wb-hint">支持 ⌘/Ctrl+V 粘贴截图、把图片拖进来，或点下方「加图」；正文里写 #话题 即可归类并高亮，如 #晚餐日记</div>
       <div class="wb-imgs" id="wb-imgs"></div>
       <div class="wb-composer-foot">
         <button class="btn btn-ghost btn-sm" id="wb-add-img" type="button">${I.image} 加图（${images.length}/${WB_MAX_IMAGES}）</button>
@@ -992,12 +992,18 @@ async function viewLinks() {
   )
   document.getElementById('fl-add').addEventListener('click', () => flModal(null))
 
+  let flMoving = false
   async function flMove(id, dir) {
+    // reorder 非幂等：请求期间连点会挪两格（全站写操作防连击约定）
+    if (flMoving) return
+    flMoving = true
     try {
       await api('/admin/links/reorder', { method: 'POST', body: { id, dir } })
       navigate() // 操作后重渲染当前路由（经 navigate 守卫，用户已切页时不拽回）
     } catch (e) {
       toast(e.message, true)
+    } finally {
+      flMoving = false
     }
   }
 
@@ -1362,12 +1368,18 @@ async function viewPages() {
 
   document.getElementById('page-add').addEventListener('click', () => pageModal(null))
 
+  let pageMoving = false
   const move = async (id, dir) => {
+    // reorder 非幂等：请求期间连点会挪两格（全站写操作防连击约定）
+    if (pageMoving) return
+    pageMoving = true
     try {
       await api('/admin/pages/reorder', { method: 'POST', body: { id, dir } })
       navigate() // 操作后重渲染当前路由（经 navigate 守卫，用户已切页时不拽回）
     } catch (e) {
       toast(e.message, true)
+    } finally {
+      pageMoving = false
     }
   }
 
@@ -1414,12 +1426,20 @@ async function viewTrash() {
       : s === 'scheduled'
         ? '<span class="chip chip-warn">定时</span>'
         : '<span class="chip chip-gray">草稿</span>'
+  // 保留期与 src/trash.ts 的 TRASH_RETENTION_DAYS 同口径（30 天）；到期后由当晚 00:30 的清理任务彻底删除
+  const TRASH_RETENTION_DAYS = 30
+  const daysLeft = (deleted_at) =>
+    Math.max(0, Math.ceil((deleted_at + TRASH_RETENTION_DAYS * 86400000 - Date.now()) / 86400000))
+  const purgeHint = (deleted_at) => {
+    const d = daysLeft(deleted_at)
+    return d > 0 ? `${d} 天后自动彻底清除` : '今晚自动彻底清除'
+  }
   const rows = d.items
     .map(
       (it) => `<div class="post-row" data-type="${it.type}" data-id="${it.id}">
       <div class="post-main">
         <div class="post-title">${esc(it.label || '（无文字内容）')}<span class="chip">${TRASH_TYPE_LABEL[it.type] || it.type}</span>${statusChip(it.status)}</div>
-        <div class="post-meta"><span>删除于 ${fmtDateTime(it.deleted_at)}</span><span>·</span><span>30 天后自动彻底清除</span></div>
+        <div class="post-meta"><span>删除于 ${fmtDateTime(it.deleted_at)}</span><span>·</span><span>${purgeHint(it.deleted_at)}</span></div>
       </div>
       <div class="post-ops">
         <button class="btn btn-ghost btn-sm" data-act="restore">恢复</button>
@@ -2188,13 +2208,65 @@ async function viewAppearance() {
     .join('')
   const market = (catalog?.themes || [])
     .map((t) => {
-      const installed = list.some((x) => x.id === t.id)
+      const installed = list.some((x) => t.id === x.id)
       return `<a class="theme-card mk-card" href="${esc(safeHttpUrl(t.link))}" target="_blank" rel="noopener">
       ${swatchHtml(swatchOf(t))}
       <div class="theme-meta"><div class="theme-name"><span>${esc(t.name)}</span>${installed ? '<span class="mk-badge">已安装</span>' : ''}</div><div class="theme-desc">${esc(t.description || '查看介绍与安装说明')}</div></div>
     </a>`
     })
     .join('') || '<div class="empty-box">市场目录暂时空着，更多皮肤敬请期待</div>'
+
+  // 外观变量（B9 · 内测）：按当前皮肤的能力出表单——主题不支持的角色（如 minimal 无主色）不出现
+  const curTheme = list.find((t) => t.id === state.settings.theme) || null
+  const ap = curTheme && curTheme.appearance
+  let apPanel = ''
+  if (ap) {
+    let picks = {}
+    try {
+      picks = JSON.parse(state.settings.appearance || '{}') || {}
+    } catch {
+      picks = {}
+    }
+    if (!picks || typeof picks !== 'object' || Array.isArray(picks)) picks = {}
+    const pickColor = (key, def) => {
+      const v = picks[key]
+      return typeof v === 'string' && /^#[0-9a-fA-F]{3,6}$/.test(v) ? v : def
+    }
+    const preset = ap.fontPresets.find((p) => p.stack === picks.font) || null
+    const customFont = !preset && typeof picks.font === 'string' ? picks.font : ''
+    const fontSel = preset ? preset.id : customFont ? 'custom' : ''
+    const apRows = ap.roles
+      .map(
+        (r) => `<div class="ap-item"><label>${esc(r.label)}</label>
+        <input type="color" class="ap-color" data-role="${esc(r.key)}" value="${esc(pickColor(r.key, r.default))}" data-default="${esc(r.default)}" title="主题默认 ${esc(r.default)}"></div>`
+      )
+      .join('')
+    apPanel = `
+    <div class="panel" style="padding:20px;margin-top:16px;" id="ap-panel">
+      <div class="form-section" style="margin-bottom:0;">
+        <h3>外观变量 <span class="mk-badge">内测</span></h3>
+        <div class="sec-desc">不改代码微调当前皮肤「${esc(curTheme.name)}」的颜色、字体与正文字号，保存后全站即时生效、可随时恢复默认；圆角等更多变量在后续版本开放。只列出当前皮肤支持的项目，换皮肤后请回到这里重调</div>
+        <div class="ap-grid">${apRows}</div>
+        <div class="form-row">
+          <div class="form-item"><label>正文字体</label>
+            <select class="input" id="ap-font-select">
+              <option value="">跟随主题</option>
+              ${ap.fontPresets.map((p) => `<option value="${esc(p.id)}"${fontSel === p.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}
+              <option value="custom"${fontSel === 'custom' ? ' selected' : ''}>自定义</option>
+            </select>
+          </div>
+          <div class="form-item"><label>自定义字体栈（逗号分隔，选「自定义」时生效）</label><input class="input" id="ap-font-custom" value="${esc(customFont)}" placeholder='"HarmonyOS Sans", sans-serif'></div>
+          <div class="form-item"><label>正文字号 px（主题默认 ${ap.richSize}，留空跟随主题）</label><input class="input" type="number" id="ap-size" min="14" max="22" step="0.5" value="${typeof picks.fontSize === 'number' && picks.fontSize ? picks.fontSize : ''}"></div>
+        </div>
+        <div class="switch-sub" style="margin-bottom:12px;">取色器初始显示主题默认值；与默认相同的项保存后不会产生任何覆盖样式</div>
+        <div class="ap-ops">
+          <button class="btn" id="btn-ap-save" type="button">保存外观</button>
+          <button class="btn btn-ghost" id="btn-ap-reset" type="button">全部恢复默认</button>
+          <a class="btn btn-ghost" href="/" target="_blank" rel="noopener">打开首页看效果 ↗</a>
+        </div>
+      </div>
+    </div>`
+  }
 
   await shellView(
     'appearance',
@@ -2204,7 +2276,7 @@ async function viewAppearance() {
       <a class="tab${tab === 'mine' ? ' is-active' : ''}" href="#/appearance">我的皮肤</a>
       <a class="tab${tab === 'market' ? ' is-active' : ''}" href="#/appearance?tab=market">皮肤市场</a>
     </div></div>
-    ${tab === 'mine' ? `<div class="panel" style="padding:20px;"><div class="settings-grid" id="theme-grid">${mine}</div></div>` : `<div class="panel" style="padding:20px;"><div class="settings-grid">${market}</div></div>`}`
+    ${tab === 'mine' ? `<div class="panel" style="padding:20px;"><div class="settings-grid" id="theme-grid">${mine}</div></div>${apPanel}` : `<div class="panel" style="padding:20px;"><div class="settings-grid">${market}</div></div>`}`
   )
 
   if (tab !== 'mine') return
@@ -2221,6 +2293,7 @@ async function viewAppearance() {
         state.settings = d.settings
         prev?.classList.remove('is-active')
         toast(`已启用皮肤「${card.dataset.name || card.dataset.theme}」`)
+        if (ap) navigate() // 换肤后面板要按新皮肤的能力重画
       } catch (e) {
         card.classList.remove('is-active')
         prev?.classList.add('is-active')
@@ -2230,6 +2303,41 @@ async function viewAppearance() {
       }
     })
   )
+
+  if (!ap) return
+  const saveAppearance = async (payload, okMsg) => {
+    const saveBtn = document.getElementById('btn-ap-save')
+    const resetBtn = document.getElementById('btn-ap-reset')
+    if (saveBtn) saveBtn.disabled = true
+    if (resetBtn) resetBtn.disabled = true
+    try {
+      const d = await api('/admin/settings', { method: 'PUT', body: { appearance: payload } })
+      state.settings = d.settings
+      toast(okMsg)
+      navigate() // 重画面板，反映已保存的口径
+    } catch (e) {
+      handleApiErr(e)
+      if (saveBtn) saveBtn.disabled = false
+      if (resetBtn) resetBtn.disabled = false
+    }
+  }
+  const btnSave = document.getElementById('btn-ap-save')
+  if (btnSave)
+    btnSave.addEventListener('click', () => {
+      // 颜色全量上报（含等于默认值的项——换皮肤后同值即无覆盖）；font/fontSize 用空值/0 表示清除
+      const obj = {}
+      document.querySelectorAll('#ap-panel .ap-color').forEach((inp) => {
+        obj[inp.getAttribute('data-role')] = (inp.value || '').toLowerCase()
+      })
+      const sel = document.getElementById('ap-font-select')
+      const custom = (document.getElementById('ap-font-custom').value || '').trim()
+      obj.font = sel.value === 'custom' ? custom : sel.value
+      const size = parseFloat(document.getElementById('ap-size').value)
+      obj.fontSize = Number.isFinite(size) ? size : 0
+      saveAppearance(JSON.stringify(obj), '外观已保存，全站即时生效')
+    })
+  const btnReset = document.getElementById('btn-ap-reset')
+  if (btnReset) btnReset.addEventListener('click', () => saveAppearance('', '已恢复主题默认外观'))
 }
 
 /* ---------------- 插件 ---------------- */
@@ -2581,11 +2689,11 @@ async function viewSettings() {
             <input class="input" id="st-bufferChannelId" style="flex:1;min-width:200px;font-family:ui-monospace,monospace;" placeholder="如 6ac89…" value="${esc(s.bufferChannelId || '')}">
             <button class="btn btn-sm" id="btn-buffer-channels" type="button">拉取渠道</button>
           </div>
-          <div class="sec-desc" id="buffer-channels-status" style="margin-top:6px;">同步时机：微博「发布」时自动推一条到所选渠道（X 免费档 280 字符，超出自动截断；#话题# 会转成 X 的话题格式）</div>
+          <div class="sec-desc" id="buffer-channels-status" style="margin-top:6px;">同步时机：微博「发布」时自动推一条到所选渠道（X 免费档 280 字符，超出自动截断；#话题 会转成 X 的话题格式）</div>
         </div>
         <div class="form-item">
           <label>广场地址（广场同步插件：文章与微博发布时同步到官网广场 bloghao.com/plaza；留空 = 官方 hub，自建 hub 才填自己的地址）</label>
-          <input class="input" id="st-plazaEndpoint" placeholder="留空 = 官方 hub（https://plaza.bloghao.com）" value="${esc(s.plazaEndpoint || '')}">
+          <input class="input" id="st-plazaEndpoint" placeholder="留空 = 官方 hub（https://bloghao.com/plaza）" value="${esc(s.plazaEndpoint || '')}">
         </div>
         <div class="form-item">
           <label>广场站点 Token（在广场 hub 注册站点后发放，见 docs/PLAZA.md；未填 = 不同步）</label>

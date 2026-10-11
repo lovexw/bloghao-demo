@@ -52,6 +52,8 @@ export interface HomeData {
   notice?: string
   /** 空列表文案（搜索/分类页有定制文案） */
   emptyText?: string
+  /** 新站引导（仅真首页）：一篇文章和一条微博都没有时出「三步开张」卡，发布内容后自动消失 */
+  newSite?: boolean
   /** 首页微博入口卡数据（仅「博客+微博」模式的首页传入；没有已发布微博时为 null） */
   weibo?: { items: WeiboItemView[]; total: number } | null
   /**
@@ -107,6 +109,19 @@ export interface LinksData {
   total: number
 }
 
+/** 正文标题锚点（render.ts headingAnchors 的产物；wechat 主题拿它渲染目录卡，site.js 据 id 出 hover ¶） */
+export interface PostHeading {
+  level: 2 | 3
+  text: string
+  id: string
+}
+
+/** 相邻文章链接（PostData.prev / next，pages 层构建） */
+export interface PostLink {
+  slug: string
+  title: string
+}
+
 export interface PostData {
   settings: SettingsMap
   post: {
@@ -131,6 +146,11 @@ export interface PostData {
   tags?: TagCount[]
   comments: { html: string; count: number }
   related: HomePostView[]
+  /** 上一篇/下一篇（prev = 更早一篇、next = 更新一篇；草稿预览不出）；主题走 render.ts postNeighborsHtml 渲染 */
+  prev?: PostLink | null
+  next?: PostLink | null
+  /** 正文标题锚点（contentHtml 里已注入对应 toc-N id；未传 = 无标题或密码墙表单） */
+  headings?: PostHeading[]
   /** 分享按钮数据：canonical 绝对链接 + 该链接的 QR 矩阵位串（src/qrcode.ts 打包；qr 为空串表示超长未生成） */
   share?: { url: string; qr: string }
 }
@@ -161,6 +181,12 @@ export interface PageData {
   navActive?: string
 }
 
+/** 创作热力图数据（render.ts heatmapHtml 消费；days 只含有文章的北京日，YYYY-MM-DD） */
+export interface HeatmapData {
+  days: { day: string; count: number }[]
+  total: number
+}
+
 /** 文章归档页（/archives）：全部已发布文章按年分组，pages 层构建好 groups */
 export interface ArchivesData {
   settings: SettingsMap
@@ -170,6 +196,10 @@ export interface ArchivesData {
   /** 文章总篇数（页头副标题用） */
   total: number
   groups: ArchiveYearGroup[]
+  /** 「今年已写」统计（当前北京年的篇数与正文字符量，render.ts yearStatsSuffix 渲染）；旧调用不传 = 不显示 */
+  yearStats?: { count: number; chars: number }
+  /** 创作热力图（GitHub 风年历，render.ts heatmapHtml 渲染）；未传不显示 */
+  heatmap?: HeatmapData
 }
 
 /** 留言板页（/guestbook）：html 为 commentsHtml({ guestbook: true }) 构建的留言墙 + 表单 */

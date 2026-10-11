@@ -4,6 +4,7 @@ import { renderFooterHtml } from './hooks'
 import { outHref } from './outlink'
 import { cstDate, esc, excerpt, extractWeiboTopics, fmtDate, fmtDateCN, fmtDateTime, isoDate, NICKNAME_CHANGE_COOLDOWN_MS, nicknameCooldown } from './utils'
 import { replaceEmoji } from './emoji'
+import { appearanceHeadStyle } from './appearance'
 import { enBetaBannerHtml, fmtDateEn, fmtDateEnShort, fmtDateTimeEn, isEn, plural, tr, weiboTimeEn } from './i18n'
 
 // 英文测试版（English 0.1）的词典与日期随共享构建器一起再导出：主题与 pages.ts 只认 render 一个进口
@@ -99,6 +100,7 @@ ${jsonLdHtml}
 ${o.settings.faviconUrl ? `<link rel="icon" href="${esc(absUrl(base, o.settings.faviconUrl))}">` : `<link rel="icon" href="/favicon.svg" type="image/svg+xml">`}
 ${base ? `<link rel="alternate" type="application/rss+xml" title="${esc(siteName)}" href="${esc(base)}/rss.xml">` : ''}
 <style>${o.css}</style>
+${appearanceHeadStyle(o.settings)}
 ${grayscaleStyle(o.settings)}
 </head>
 <body${o.preview ? ' data-preview="1"' : ''}>
@@ -123,8 +125,12 @@ function absUrl(siteUrl: string, path: string): string {
 }
 
 /** 一键灰度（哀悼/纪念模式）：settings.siteGrayscale 开启时全站去色。
- *  放在 <html> 上才能覆盖背景色；注：filter 会让 fixed 后代改挂 html 定位基准——
- *  五套主题目前都没有 fixed 元素（sticky 不受影响），新主题引入固定定位时记得复查 */
+ *  放在 <html> 上才能覆盖背景色。filter 会为 fixed 后代改挂定位基准——但按 CSS Filter
+ *  Effects 规范，根元素（html）上的 filter 豁免、不建立 fixed 后代的 containing block，
+ *  因此 wechat 移动端下拉（fixed）、site.js 运行时注入的灯箱/返回顶部/阅读进度条等
+ *  fixed 元素在灰度下照常定位（Chromium/WebKit/Gecko 均按根元素豁免实现）。
+ *  注意：这条安全边界只对「filter 挂在根元素」成立——若未来把灰度改挂到某个包裹层，
+ *  其内所有 fixed 后代都会改挂该层为定位基准，必须先复查（AGENTS.md 灰度防线） */
 function grayscaleStyle(settings: SettingsMap): string {
   return settings.siteGrayscale === '1' ? '<style>html{filter:grayscale(100%)}</style>' : ''
 }
@@ -275,6 +281,8 @@ export function siteNav(o: {
   memberEnabled?: boolean
   /** compact 布局（主题逐个试点）：主条只留内容区入口 + 会员药丸压轴，留言板/友情链接/排行榜/随机降级到主题页脚 */
   compact?: boolean
+  /** 吸顶导航（wechat 先行）：输出 data-xw-nav-sticky 标记，site.js 据此做下滚收起/上滑浮现（阅读工具条联动） */
+  sticky?: boolean
   /** 英文测试版：导航词走词典（tr），中文路径不传即原样 */
   en?: boolean
 }): string {
@@ -302,6 +310,8 @@ export function siteNav(o: {
   ${menu}
 </details>`
       : ''
+  // RSS 订阅图标：博客文化的入口，内联塑造（currentColor 随各主题导航链接色），compact 与完整形态都保留
+  const rssIcon = `<a class="${o.cls}-rss" href="/rss.xml" title="${tr(en, 'RSS 订阅')}" aria-label="RSS" style="display:inline-flex;align-items:center;opacity:.55"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.18 17.82a2.18 2.18 0 1 1-4.36 0 2.18 2.18 0 0 1 4.36 0zM2 8.73a13.27 13.27 0 0 1 13.27 13.27h-3.64A9.64 9.64 0 0 0 2 12.36V8.73zm0-6.36A19.64 19.64 0 0 1 21.64 22H18A16 16 0 0 0 2 6V2.36z"/></svg></a>`
   // 纯微博：'/' 即微博时间线，导航首位「微博」直达 /weibo（首页 item 退出）；纯博客：去掉「微博」
   const weiboItem = m === 'blog' ? '' : item('/weibo', tr(en, '微博'), o.active === 'weibo' || (m === 'weibo' && o.active === 'home'))
   const homeItem = m === 'weibo' ? '' : item('/', tr(en, '首页'), o.active === 'home')
@@ -310,17 +320,18 @@ export function siteNav(o: {
     const memberPill = o.memberEnabled
       ? `<a class="${o.cls}-member${o.active === 'member' ? ' is-active' : ''}" href="/member">${tr(en, '会员')}</a>`
       : ''
-    return `<nav class="${o.cls}" aria-label="${tr(en, '站点导航')}">
+    return `<nav class="${o.cls}"${o.sticky ? ' data-xw-nav-sticky' : ''} aria-label="${tr(en, '站点导航')}">
   ${homeItem || weiboItem}
   ${m === 'weibo' ? '' : weiboItem}
   ${m === 'weibo' ? '' : item('/archives', tr(en, '归档'), o.active === 'archives')}
   ${m === 'weibo' ? '' : drop}
   ${(o.pages || []).map((p) => item(p.href, p.title, o.active === p.key)).join('')}
   ${item('/about', tr(en, '关于我'), o.active === 'about')}
+  ${rssIcon}
   ${memberPill}
 </nav>`
   }
-  return `<nav class="${o.cls}" aria-label="${tr(en, '站点导航')}">
+  return `<nav class="${o.cls}"${o.sticky ? ' data-xw-nav-sticky' : ''} aria-label="${tr(en, '站点导航')}">
   ${homeItem || weiboItem}
   ${m === 'weibo' ? '' : weiboItem}
   ${m === 'weibo' ? '' : item('/archives', tr(en, '归档'), o.active === 'archives')}
@@ -332,6 +343,7 @@ export function siteNav(o: {
   ${o.memberEnabled ? item('/rank', tr(en, '排行榜'), o.active === 'rank') : ''}
   ${item('/about', tr(en, '关于我'), o.active === 'about')}
   ${m === 'weibo' ? '' : item('/random', tr(en, '随机'))}
+  ${rssIcon}
 </nav>`
 }
 
@@ -368,6 +380,150 @@ export function archiveGroups(posts: ArchiveItemView[]): ArchiveYearGroup[] {
       count: items.length,
       items: items.sort((a, b) => b.ts - a.ts),
     }))
+}
+
+/** 归档页头部「今年已写」统计后缀：拼进各主题的副标题 <p>（muted 样式随主题）。
+ * 无数据/零篇不出声；字数口径 = 正文字符量（含 Markdown 标记，db.ts yearArchiveStats），展示用「约」 */
+export function yearStatsSuffix(stats: { count: number; chars: number } | undefined, en = false): string {
+  if (!stats || !stats.count) return ''
+  if (en) return ` · ${stats.count} ${plural(stats.count, 'post', 'posts')} this year`
+  const wan =
+    stats.chars >= 10000 ? ` · 约 ${(stats.chars / 10000).toFixed(1)} 万字` : stats.chars > 0 ? ` · 约 ${stats.chars} 字` : ''
+  return ` · 今年已写 ${stats.count} 篇${wan}`
+}
+
+/** 正文标题锚点：给净化后正文 h2/h3 注入 toc-N 生成 id（id 由渲染端生成、非用户输入，
+ * 不触净化器「不放行 id」的 DOM clobbering 防线），pages.ts renderPost 对七主题统一调用；
+ * wechat 主题用返回的 items 渲染目录卡，site.js 据标题上的 id 出桌面 hover ¶ 复制链接。
+ * text 是剥标签后的已转义 HTML 片段（sanitize 前已转义），插入 HTML 时原样使用勿再 esc */
+export function headingAnchors(contentHtml: string): { html: string; items: { level: 2 | 3; text: string; id: string }[] } {
+  const items: { level: 2 | 3; text: string; id: string }[] = []
+  const html = contentHtml.replace(/<(h[23])((?:\s[^>]*)?)>([\s\S]*?)<\/\1>/g, (_m: string, tag: string, attrs: string, inner: string) => {
+    const id = `toc-${items.length + 1}`
+    items.push({ level: tag === 'h2' ? 2 : 3, text: inner.replace(/<[^>]*>/g, '').trim(), id })
+    return `<${tag}${attrs} id="${id}">${inner}</${tag}>`
+  })
+  return { html, items }
+}
+
+/** 页脚「站点名片 + 足迹」（七主题共享）：左侧头像/站名/简介，右侧累计篇数、字数与写作年份。
+ * 统计读 settings.siteFoot（cron 每晚刷新 + 冷启动播种，滞后一夜属展示口径），未播种只出名片半边 */
+export function footCardHtml(s: SettingsMap, en = false): string {
+  let stats: { posts: number; chars: number; since: number } | null = null
+  try {
+    const v: unknown = JSON.parse(s.siteFoot || 'null')
+    if (v && typeof v === 'object' && typeof (v as { posts?: unknown }).posts === 'number') {
+      stats = v as { posts: number; chars: number; since: number }
+    }
+  } catch {
+    /* 脏数据按未播种处理，名片照常 */
+  }
+  const ch = (s.siteName || (en ? 'B' : '博')).trim().charAt(0) || (en ? 'B' : '博')
+  const avatar = s.avatarUrl
+    ? `<span class="fc-avatar"><img src="${esc(s.avatarUrl)}" alt="${esc(tr(en, s.siteName))}"></span>`
+    : `<span class="fc-avatar" aria-hidden="true">${esc(ch)}</span>`
+  let statsHtml = ''
+  if (stats) {
+    const year = stats.since ? cstDate(stats.since).getUTCFullYear() : 0
+    const parts = en
+      ? [`${stats.posts} ${plural(stats.posts, 'post', 'posts')}`, `${stats.chars} characters`, year ? `since ${year}` : '']
+      : [
+          `共 ${stats.posts} 篇`,
+          stats.chars >= 10000 ? `约 ${(stats.chars / 10000).toFixed(1)} 万字` : stats.chars > 0 ? `约 ${stats.chars} 字` : '',
+          year ? `${year} 年写起` : '',
+        ]
+    const line = parts.filter(Boolean).join(' · ')
+    if (line) statsHtml = `<div class="fc-stats">${line}</div>`
+  }
+  return `<div class="fc">
+  <div class="fc-id">${avatar}<div class="fc-main"><span class="fc-name">${esc(tr(en, s.siteName))}</span>${
+    s.siteDescription ? `<span class="fc-desc">${esc(tr(en, s.siteDescription))}</span>` : ''
+  }</div></div>
+  ${statsHtml}
+</div>`
+}
+
+/** 新站引导卡（首页空状态）：一篇文章和一条微博都没有时给部署者指路——三步开张，直达后台对应页。
+ * 无背景虚线卡 + currentColor 中性半透明，任何主题（亮暗）都长在自己的语言里，七主题零 CSS 成本 */
+export function newSiteGuideHtml(en = false): string {
+  const step = (href: string, label: string) =>
+    `<a href="${href}" style="display:block;padding:10px 14px;border-radius:10px;background:rgba(128,128,128,0.08);color:inherit;text-decoration:none;font-size:14px;text-align:left;">${label}</a>`
+  return `<section class="xw-guide" style="max-width:560px;margin:34px auto 8px;padding:26px 24px 20px;border:2px dashed rgba(128,128,128,0.35);border-radius:16px;text-align:center;">
+  <div style="font-size:30px;line-height:1;" aria-hidden="true">🎉</div>
+  <h2 style="font-size:17px;margin:10px 0 6px;">${tr(en, '开张大吉，还差三步')}</h2>
+  <p style="font-size:13.5px;opacity:.75;margin:0 0 16px;">${tr(en, '这里还是一张白纸。登录后台，几分钟就能迎来第一位读者：')}</p>
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:320px;margin:0 auto 14px;">
+    ${step('/admin', '✍️ ' + tr(en, '写下第一篇文章'))}
+    ${step('/admin/#/appearance', '🎨 ' + tr(en, '挑一套顺眼的皮肤'))}
+    ${step('/admin/#/settings', '⚙️ ' + tr(en, '补上站名、头像与简介'))}
+  </div>
+  <p style="font-size:12px;opacity:.5;margin:0;">${tr(en, '这张卡片只在没有内容时出现，发布第一篇后自动消失')}</p>
+</section>`
+}
+
+/** 创作热力图（归档页，GitHub 风年历）：过去一年按北京日聚合的发文密度。
+ * 色阶 = 各主题 accent 的透明度四档（零依赖、任何浏览器都正确），空格 = 主题分隔线色；
+ * 列 = 周（周日行首），行 1 放月份标签；now 可注入以便 Node 测试钉住日期。
+ * 无数据返回空串；legend 与「过去一年写了 N 篇」一并输出 */
+export function heatmapHtml(
+  data: { days: { day: string; count: number }[]; total: number } | undefined,
+  en = false,
+  now = Date.now()
+): string {
+  if (!data || !data.days.length) return ''
+  const counts = new Map<string, number>()
+  for (const d of data.days) counts.set(d.day, d.count)
+  // 北京墙上的「今天」：+8h 后取 UTC 分量（与 cstDate 同口径），锚成 UTC 午夜日期做日步进
+  const bj = new Date(now + 8 * 3_600_000)
+  const DAY = 86_400_000
+  const end = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate())
+  const start = end - (52 * 7 + new Date(end).getUTCDay()) * DAY
+  const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const totalDays = Math.floor((end - start) / DAY) + 1
+  const cols = Math.ceil(totalDays / 7)
+  let lastMonth = -1
+  let body = ''
+  for (let c = 0; c < cols; c++) {
+    const colStart = start + c * 7 * DAY
+    const d0 = new Date(colStart)
+    // 行 1：月份标签（该列首日进入新月份时贴一个），否则占位空格保持网格对位
+    if (d0.getUTCMonth() !== lastMonth) {
+      body += `<span class="hm-month">${en ? MONTHS_EN[d0.getUTCMonth()] : d0.getUTCMonth() + 1 + '月'}</span>`
+      lastMonth = d0.getUTCMonth()
+    } else {
+      body += '<span class="hm-sp"></span>'
+    }
+    for (let r = 0; r < 7; r++) {
+      const t = colStart + r * DAY
+      if (t > end) break
+      const day = new Date(t).toISOString().slice(0, 10)
+      const n = counts.get(day) || 0
+      const lvl = n >= 4 ? 4 : n
+      const title = n > 0 ? ` title="${day} · ${n} ${en ? (n === 1 ? 'post' : 'posts') : '篇'}"` : ''
+      body += `<i class="hm-cell${lvl ? ` hm-l${lvl}` : ''}"${title}></i>`
+    }
+  }
+  const summary = en
+    ? `${data.total} ${plural(data.total, 'post', 'posts')} in the last year`
+    : `过去一年写了 ${data.total} 篇`
+  const legend = `<i class="hm-cell"></i><i class="hm-cell hm-l1"></i><i class="hm-cell hm-l2"></i><i class="hm-cell hm-l3"></i><i class="hm-cell hm-l4"></i>`
+  return `<section class="hm"><div class="hm-scroll"><div class="hm-grid">${body}</div></div>` +
+    `<p class="hm-foot"><span>${summary}</span><span class="hm-legend">${en ? 'Less' : '少'}${legend}${en ? 'More' : '多'}</span></p></section>`
+}
+
+/** 上一篇/下一篇导航（prev = 更早一篇、next = 更新一篇）：七主题共享结构、各主题按自己的
+ * 变量调 .pn-* 样式；缺一侧出占位空格保持两端对齐，两侧都空返回空串（不产生任何输出） */
+export function postNeighborsHtml(
+  prev: { slug: string; title: string } | null | undefined,
+  next: { slug: string; title: string } | null | undefined,
+  en = false
+): string {
+  if (!prev && !next) return ''
+  const cell = (n: { slug: string; title: string } | null | undefined, label: string, side: 'prev' | 'next') =>
+    n
+      ? `<a class="pn-cell pn-${side}" href="/post/${esc(n.slug)}"><span class="pn-label">${label}</span><span class="pn-title">${esc(n.title)}</span></a>`
+      : `<span class="pn-cell pn-${side} pn-empty" aria-hidden="true"></span>`
+  return `<nav class="pn-nav">${cell(prev, tr(en, '上一篇'), 'prev')}${cell(next, tr(en, '下一篇'), 'next')}</nav>`
 }
 
 /** 归档列表 HTML：每篇一行的 <time> + 标题链接（纯静态超链接，利于搜索引擎收录）；en 时日期换英文短格式 */
@@ -548,14 +704,16 @@ export function trimUrlTail(u: string): string {
   return s
 }
 
-/** 微博正文分词：URL 与 #话题# 共用一个正则一次扫描（先转链接再扫话题会把 href 里的
+/** 微博正文分词：URL 与 #话题 共用一个正则一次扫描（先转链接再扫话题会把 href 里的
  *  #fragment 误判成话题、把生成的锚点拆坏）。URL 不吞 CJK 字符与全角标点——
- *  「https://x.com的官网」这类中文紧贴的写法，链接应停在汉字前 */
+ *  「https://x.com的官网」这类中文紧贴的写法，链接应停在汉字前。
+ *  话题名边界与 utils.ts WEIBO_TOPIC_RE 同口径（汉字后可跟话题、ASCII 字母数字防误判、
+ *  句读即停），site.js 的 WB_TEXT_RE 是本正则的手工 ES5 镜像 */
 const WEIBO_TEXT_RE =
-  /(https?:\/\/[^\s<>"'\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]+)|((?<![\p{L}\p{N}#])#[^\s#&<>"']{1,24}(?:#|(?=\s)|$))/gu
+  /(https?:\/\/[^\s<>"'\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]+)|((?<![A-Za-z0-9#])#[^\s#&<>"'，。！？；：、…~～,.!?;:]{1,24}(?:#|(?=[\s，。！？；：、…~～,.!?;:])|$))/gu
 
 /** 微博正文：URL 转可点击超链（白名单外域过 /go 中间页，src/outlink.ts），
- *  #话题# 渲染成指向 /weibo?topic= 的链接；其余文本转义 */
+ *  #话题（或成对 #话题#）渲染成指向 /weibo?topic= 的高亮链接；其余文本转义 */
 export function weiboTextHtml(content: string): string {
   let out = ''
   let last = 0
@@ -576,7 +734,7 @@ export function weiboTextHtml(content: string): string {
   return out + replaceEmoji(esc(content.slice(last)))
 }
 
-/** 微博话题条：默认不显示（避免标签堆满页头）；仅从正文 #话题# 链接进入筛选时，显示「全部 + 当前话题」方便退出筛选 */
+/** 微博话题条：默认不显示（避免标签堆满页头）；仅从正文 #话题 链接进入筛选时，显示「全部 + 当前话题」方便退出筛选 */
 export function weiboTopicBar(topics: { name: string; count: number }[], active?: string, en = false): string {
   if (!active) return ''
   const hit = topics.find((t) => t.name === active)
@@ -1042,7 +1200,7 @@ export function weiboComposer(o: { adminName: string; en?: boolean }): string {
   const en = !!o.en
   return `<form class="wb-composer" data-wb-composer>
   <p class="wb-composer-as">${en ? 'Posting as' : '以作者'} <b>${esc(o.adminName)}</b>${en ? '' : ' 的身份发布'}</p>
-  <textarea class="wb-composer-textarea" name="content" maxlength="5000" rows="3" placeholder="${tr(en, '有什么新鲜事？正文里写 #话题# 可归类')}"></textarea>
+  <textarea class="wb-composer-textarea" name="content" maxlength="5000" rows="3" placeholder="${tr(en, '有什么新鲜事？写 #话题 即可归类')}"></textarea>
   <div class="wb-composer-tiles" hidden></div>
   <div class="wb-composer-foot">
     <button class="wb-composer-add" type="button">${tr(en, '加图（0/9）')}</button>
@@ -1151,10 +1309,11 @@ export function commentsHtml(o: {
   const orphans = o.comments.filter((c) => c.parent_id && !commentIds.has(c.parent_id))
   for (const c of orphans) tops.push({ ...c, parent_id: 0 })
 
-  const renderItem = (c: CommentRow): string => {
-    // 徽标：作者优先；会员评论（member_id > 0 时列表查询带出 member_tier，契约 DEVPLAN 附录 A）带「会员」徽标
+  const renderItem = (c: CommentRow, floor?: number): string => {
+    // 徽标：作者优先（文章语境叫「楼主」，留言板没有楼层的概念沿用「作者」）；会员评论（member_id > 0 时列表查询带出
+    // member_tier，契约 DEVPLAN 附录 A）带「会员」徽标。楼层号只标顶层评论（盖楼的是一楼一层，楼中楼不占号）
     const badge = c.is_admin
-      ? `<span class="cmt-badge">${tr(en, '作者')}</span>`
+      ? `<span class="cmt-badge">${tr(en, o.guestbook ? '作者' : '楼主')}</span>`
       : c.member_tier
         ? `<span class="cmt-badge">${en ? 'Member' : '会员'}</span>`
         : ''
@@ -1167,14 +1326,15 @@ export function commentsHtml(o: {
     ${commentAvatarHtml(c, o.adminAvatar)}
     <span class="cmt-name">${esc(c.nickname)}${badge}</span>
     <span class="cmt-time">${en ? fmtDateTimeEn(c.created_at) : fmtDateTime(c.created_at)}</span>
+    ${floor ? `<span class="cmt-floor" style="font-size:11px;opacity:0.45;font-variant-numeric:tabular-nums">#${floor}</span>` : ''}
     ${replyBtn}
   </div>
   <div class="cmt-body">${replaceEmoji(esc(c.content))}</div>
-  ${kids.length ? `<ul class="cmt-children">${kids.map(renderItem).join('')}</ul>` : ''}
+  ${kids.length ? `<ul class="cmt-children">${kids.map((k) => renderItem(k)).join('')}</ul>` : ''}
 </li>`
   }
 
-  const list = tops.map((c) => renderItem(c)).join('\n')
+  const list = tops.map((c, i) => renderItem(c, i + 1)).join('\n')
 
   const formInner = `
   <input type="hidden" name="parentId" value="">

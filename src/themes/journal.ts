@@ -21,6 +21,11 @@ import {
   pagerHtml,
   paywallHtml,
   plural,
+  yearStatsSuffix,
+  footCardHtml,
+  newSiteGuideHtml,
+  postNeighborsHtml,
+  heatmapHtml,
   rankListHtml,
   shareBtn,
   siteMode,
@@ -46,7 +51,7 @@ const id = 'journal'
 function foot(s: SettingsMap, links: string): string {
   const en = isEn(s)
   return `<footer class="jrn-footer">
-    <span class="jrn-footer-note">${esc(tr(en, s.footerText || ''))}</span>
+    ${footCardHtml(s, en)}<span class="jrn-footer-note">${esc(tr(en, s.footerText || ''))}</span>
     <span class="jrn-footer-links">${footLinks(s, links)}</span>
   </footer>`
 }
@@ -117,6 +122,7 @@ export function home(d: HomeData): string {
   </header>
   <main>
   ${d.notice ? `<div class="jrn-notice">${d.notice}</div>` : ''}
+  ${d.newSite ? newSiteGuideHtml(en) : ''}
   ${d.weiboFeed ? weiboHomeFeed({ settings: s, items: d.weiboFeed.items, total: d.weiboFeed.total, avatarHtml: avatar(s), allowComments: d.weiboFeed.allowComments, adminName: d.weiboFeed.adminName, memberName: d.weiboFeed.memberName }) : ''}
   ${d.weibo ? weiboHomeEntry({ ...d.weibo, en }) : ''}
   ${onThisDayCard(d.onThisDay, en)}
@@ -169,6 +175,7 @@ export function post(d: PostData): string {
     </div>
   </article>
   ${related}
+  ${postNeighborsHtml(d.prev, d.next, en)}
   ${d.comments.html}
   </main>
   ${foot(d.settings, en ? FOOT_LINKS_EN.article : FOOT_LINKS.article)}
@@ -216,7 +223,8 @@ export function archives(d: ArchivesData): string {
   ${siteNav({ mode: siteMode(d.settings), memberEnabled: d.settings.membersEnabled === '1', cls: 'jrn-snav', categories: d.categories, tags: d.tags, pages: d.pages, active: 'archives', en })}
   <main>
   <h1 class="jrn-title jrn-page-title">${tr(en, '归档')}</h1>
-  <p class="jrn-intro jrn-page-sub">${d.total > 0 ? (en ? `This journal holds ${d.total} ${plural(d.total, 'entry', 'entries')} in all` : `这本手账一共写了 ${d.total} 篇`) : en ? 'Every post lands here.' : '写下的每一篇都会收进这里'}</p>
+  <p class="jrn-intro jrn-page-sub">${d.total > 0 ? (en ? `This journal holds ${d.total} ${plural(d.total, 'entry', 'entries')} in all` : `这本手账一共写了 ${d.total} 篇`) : en ? 'Every post lands here.' : '写下的每一篇都会收进这里'}${yearStatsSuffix(d.yearStats, en)}</p>
+  ${heatmapHtml(d.heatmap, en)}
   <section class="jrn-archives">${archiveListHtml(d.groups, en) || `<p class="jrn-empty">${en ? 'This page is still empty.' : '这一页还空着。'}</p>`}</section>
   </main>
   ${foot(s, en ? FOOT_LINKS_EN.archive : FOOT_LINKS.archive)}

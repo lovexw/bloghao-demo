@@ -56,6 +56,11 @@
     '退出失败，请重试': 'Failed to log out — please try again',
     '说点什么…': 'Say something…',
     '😊 表情': '😊 Emoji',
+    '返回顶部': 'Back to top',
+    '复制代码': 'Copy code',
+    '已复制': 'Copied',
+    '复制失败': 'Copy failed',
+    '复制本节链接': 'Copy link to this section',
   }
   function T(zh) {
     return EN ? EN_STR[zh] || zh : zh
@@ -289,6 +294,18 @@
         btn.classList.toggle('liked', !liked)
         var count = btn.querySelector('[data-count]')
         if (count && typeof d.likes === 'number') count.textContent = String(d.likes)
+        // 点赞成功心跳一下（取消赞不弹）：Web Animations API 不可用就安静跳过
+        if (!liked && btn.animate) {
+          btn.animate(
+            [
+              { transform: 'scale(1)' },
+              { transform: 'scale(1.25)', offset: 0.35 },
+              { transform: 'scale(0.92)', offset: 0.65 },
+              { transform: 'scale(1)' },
+            ],
+            { duration: 420, easing: 'ease-out' }
+          )
+        }
       })
       .catch(function () {})
       .finally(function () {
@@ -567,12 +584,13 @@
       var ch = (c.nickname || (EN ? 'G' : '客')).charAt(0) || (EN ? 'G' : '客')
       return '<span class="wb-cmt-avatar" aria-hidden="true">' + esc(ch) + '</span>'
     }
-    function item(c, nested) {
+    function item(c, nested, floor) {
       var html =
         '<li class="wb-cmt-item' + (nested ? ' wb-cmt-nested' : '') + '" id="wbc-' + c.id + '">' +
         '<div class="wb-cmt-head">' + avatarHtml(c) + '<span class="wb-cmt-name">' + esc(c.nickname) +
-        (Number(c.is_admin) ? '<span class="wb-cmt-badge">' + T('作者') + '</span>' : c.member_name ? '<span class="wb-cmt-badge">' + (EN ? 'Member' : '会员') + '</span>' : '') +
+        (Number(c.is_admin) ? '<span class="wb-cmt-badge">' + T('楼主') + '</span>' : c.member_name ? '<span class="wb-cmt-badge">' + (EN ? 'Member' : '会员') + '</span>' : '') +
         '</span><span class="wb-cmt-time">' + fmtTime(c.created_at) + '</span>' +
+        (floor ? '<span class="wb-cmt-floor" style="font-size:11px;opacity:0.45;font-variant-numeric:tabular-nums">#' + floor + '</span>' : '') +
         (isAdmin
           ? '<button type="button" class="wb-cmt-reply-btn" data-reply="' + c.id + '" data-name="' + esc(c.nickname) + '">' + T('回复') + '</button>'
           : '') +
@@ -581,7 +599,7 @@
       if (kids.length) html += '<ul class="wb-cmt-children">' + kids.map(function (k) { return item(k, true) }).join('') + '</ul>'
       return html + '</li>'
     }
-    listEl.innerHTML = '<ul class="wb-cmt-list">' + tops.map(function (c) { return item(c, false) }).join('') + '</ul>'
+    listEl.innerHTML = '<ul class="wb-cmt-list">' + tops.map(function (c, i) { return item(c, false, i + 1) }).join('') + '</ul>'
   }
 
   function loadWeiboComments(panel) {
@@ -992,11 +1010,12 @@
   ;(function () {
     var WB_MAX_IMAGES = 9
     var WB_MAX_CHARS = 5000
-    // 与后端 weiboTextHtml（src/render.ts）同口径：URL 与 #话题# 单次扫描二选一（先转链接再扫
-    // 话题会把 href 里的 #fragment 误判成话题），URL 不吞 CJK 与全角标点。
+    // 与后端 weiboTextHtml（src/render.ts）/ utils.ts WEIBO_TOPIC_RE 三处同口径：URL 与 #话题
+    // 单次扫描二选一（先转链接再扫话题会把 href 里的 #fragment 误判成话题），URL 不吞 CJK 与
+    // 全角标点；话题名汉字后可跟、ASCII 字母数字防误判（C#）、句读（，。！？等）即停。
     // 用捕获组消费「# 前的字符」代替 lookbehind——Safari ≤ 16.3 不支持 lookbehind，
     // 正则字面量在解析期就抛 SyntaxError，会让整个 site.js 瘫掉（匹配语义与服务端一致）
-    var WB_TEXT_RE = /(https?:\/\/[^\s<>"'\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]+)|((^|[^\p{L}\p{N}#])(#[^\s#&<>"']{1,24}(?:#|(?=\s)|$)))/gu
+    var WB_TEXT_RE = /(https?:\/\/[^\s<>"'\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]+)|((^|[^A-Za-z0-9#])(#[^\s#&<>"'，。！？；：、…~～,.!?;:]{1,24}(?:#|(?=[\s，。！？；：、…~～,.!?;:])|$)))/gu
 
     // 与 src/outlink.ts 的 TRUSTED_OUT_DOMAINS 手工同步：前四项是站长自有域名，其余主流大站；
     // 白名单外域包 /go 中间页（外链提醒 + 免责声明），同源与白名单直出
@@ -1591,6 +1610,244 @@
       e.preventDefault()
       open(t)
     })
+  })()
+
+  /* ---------------- 返回顶部：长文滚动过一屏后右下角浮现 ----------------
+   * 纯 JS + 内联 style（灯箱同路），样式自含不给七主题加负担；底部贴 safe-area */
+  ;(function () {
+    var btn = document.createElement('button')
+    btn.type = 'button'
+    btn.setAttribute('aria-label', T('返回顶部'))
+    btn.title = T('返回顶部')
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>'
+    btn.style.cssText =
+      'display:none;position:fixed;right:18px;bottom:calc(18px + env(safe-area-inset-bottom));z-index:50;' +
+      'width:40px;height:40px;border:none;border-radius:50%;cursor:pointer;' +
+      'background:rgba(40,38,34,0.78);color:#fff;box-shadow:0 2px 10px rgba(0,0,0,0.18);' +
+      '-webkit-tap-highlight-color:transparent;align-items:center;justify-content:center;'
+    var visible = false
+    function update() {
+      var y = window.pageYOffset || document.documentElement.scrollTop || 0
+      var show = y > 480
+      if (show === visible) return
+      visible = show
+      btn.style.display = show ? 'flex' : 'none'
+    }
+    window.addEventListener('scroll', update, { passive: true })
+    btn.addEventListener('click', function () {
+      var smooth = 'scrollBehavior' in document.documentElement.style &&
+        !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+      if (smooth) window.scrollTo({ top: 0, behavior: 'smooth' })
+      else window.scrollTo(0, 0)
+    })
+    document.body.appendChild(btn)
+    update()
+  })()
+
+  /* ---------------- 代码块一键复制：.rich pre 右上角常驻小按钮 ----------------
+   * 包一层定位容器（七主题无 .rich > pre 子选择器，安全），剪贴板 API 不可用时回落 execCommand */
+  ;(function () {
+    function flash(btn, text) {
+      btn.textContent = text
+      clearTimeout(btn.__xwTimer)
+      btn.__xwTimer = setTimeout(function () {
+        btn.textContent = T('复制代码')
+      }, 1400)
+    }
+    function legacyCopy(text) {
+      var ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      var ok = false
+      try {
+        ok = document.execCommand('copy')
+      } catch (e) {}
+      document.body.removeChild(ta)
+      return ok
+    }
+    var pres = document.querySelectorAll('.rich pre')
+    for (var i = 0; i < pres.length; i++) {
+      ;(function (pre) {
+        var wrap = document.createElement('div')
+        wrap.style.cssText = 'position:relative;'
+        pre.parentNode.insertBefore(wrap, pre)
+        wrap.appendChild(pre)
+        var btn = document.createElement('button')
+        btn.type = 'button'
+        btn.textContent = T('复制代码')
+        btn.setAttribute('aria-label', T('复制代码'))
+        btn.style.cssText =
+          'position:absolute;top:8px;right:8px;z-index:1;padding:4px 10px;font-size:12px;line-height:1.4;' +
+          'border:1px solid rgba(0,0,0,0.1);border-radius:8px;cursor:pointer;' +
+          'background:rgba(255,255,255,0.85);color:#555;backdrop-filter:blur(2px);' +
+          '-webkit-tap-highlight-color:transparent;'
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation()
+          var text = pre.innerText || pre.textContent || ''
+          var done = function () {
+            flash(btn, T('已复制'))
+          }
+          var fail = function () {
+            flash(btn, T('复制失败'))
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () {
+              ;(legacyCopy(text) ? done : fail)()
+            })
+          } else {
+            ;(legacyCopy(text) ? done : fail)()
+          }
+        })
+        wrap.appendChild(btn)
+      })(pres[i])
+    }
+  })()
+
+  /* ---------------- 标题锚点 ¶：桌面 hover h2/h3 浮现，点击复制带锚点的链接 ----------------
+   * id 由服务端 pages.ts headingAnchors 注入（toc-N）；触屏无 hover 不出，防误触 */
+  ;(function () {
+    if (!window.matchMedia || !window.matchMedia('(hover: hover)').matches) return
+    var rich = document.querySelector('.rich')
+    if (!rich) return
+    var heads = rich.querySelectorAll('h2[id], h3[id]')
+    var pinned = null
+    function copyUrl(url, ok) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(ok, function () {})
+      } else {
+        var ta = document.createElement('textarea')
+        ta.value = url
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;'
+        document.body.appendChild(ta)
+        ta.select()
+        try {
+          document.execCommand('copy')
+          ok()
+        } catch (e) {}
+        document.body.removeChild(ta)
+      }
+    }
+    for (var i = 0; i < heads.length; i++) {
+      ;(function (h) {
+        h.addEventListener('mouseenter', function () {
+          if (h.querySelector('.xw-hanchor')) return
+          var a = document.createElement('a')
+          a.className = 'xw-hanchor'
+          a.href = '#' + h.id
+          a.textContent = '¶'
+          a.title = T('复制本节链接')
+          a.setAttribute('aria-label', T('复制本节链接'))
+          a.style.cssText = 'margin-left:8px;font-weight:400;text-decoration:none;opacity:0.55;color:inherit;'
+          a.addEventListener('click', function (e) {
+            e.preventDefault()
+            copyUrl(location.href.split('#')[0] + '#' + h.id, function () {
+              a.textContent = '✓'
+              pinned = a
+              setTimeout(function () {
+                pinned = null
+                if (a.parentNode) a.parentNode.removeChild(a)
+              }, 1100)
+            })
+          })
+          h.appendChild(a)
+        })
+        h.addEventListener('mouseleave', function () {
+          if (pinned && pinned.parentNode === h) return
+          var a = h.querySelector('.xw-hanchor')
+          if (a) a.parentNode.removeChild(a)
+        })
+      })(heads[i])
+    }
+  })()
+
+  /* ---------------- 创作热力图：窄屏横向溢出时默认滚到最右（最新的周），一眼看到最近更新 ----------------
+   * 不溢出（桌面端整年放得下）时赋值无效，天然不滚动 */
+  ;(function () {
+    var scrollers = document.querySelectorAll('.hm-scroll')
+    for (var i = 0; i < scrollers.length; i++) scrollers[i].scrollLeft = scrollers[i].scrollWidth
+  })()
+
+  /* ---------------- 阅读工具条：文章页顶部进度条 + 章节胶囊 + 吸顶导航收放 + 目录 scrollspy ----------------
+   * 进度条与章节胶囊内联样式自含（填充色走各主题一行 CSS 钩子 .xw-readbar-fill）；
+   * 带 data-xw-nav-sticky 的导航（wechat 先行）下滚收起、上滑浮现，收起后章节胶囊接力报方位；
+   * wechat 桌面目录卡（.wx-toc）随滚动高亮当前小节。rAF 节流，无标题/无滚动的短页全部空转 */
+  ;(function () {
+    var rich = document.querySelector('.rich')
+    if (!rich) return
+    var heads = rich.querySelectorAll('h2[id], h3[id]')
+    var headList = []
+    for (var i = 0; i < heads.length; i++) {
+      headList.push({ el: heads[i], text: (heads[i].textContent || '').trim(), id: heads[i].id })
+    }
+    var tocLinks = {}
+    var toc = document.querySelector('.wx-toc')
+    if (toc) {
+      var links = toc.querySelectorAll('a[href^="#"]')
+      for (var j = 0; j < links.length; j++) tocLinks[links[j].getAttribute('href').slice(1)] = links[j]
+    }
+    var bar = document.createElement('div')
+    bar.setAttribute('aria-hidden', 'true')
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:3px;z-index:80;pointer-events:none;'
+    var fill = document.createElement('i')
+    fill.className = 'xw-readbar-fill'
+    fill.style.cssText = 'display:block;height:100%;width:0;'
+    bar.appendChild(fill)
+    var chip = document.createElement('span')
+    chip.className = 'xw-readbar-chip'
+    chip.setAttribute('aria-hidden', 'true')
+    chip.style.cssText =
+      'position:fixed;top:10px;left:16px;z-index:81;max-width:60%;padding:4px 12px;border-radius:999px;' +
+      'font-size:12px;line-height:1.4;color:#fff;background:rgba(40,38,34,0.72);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;opacity:0;transition:opacity 0.2s ease;'
+    document.body.appendChild(bar)
+    document.body.appendChild(chip)
+    var nav = document.querySelector('[data-xw-nav-sticky]')
+    var lastY = window.pageYOffset || 0
+
+    function currentHeading() {
+      var cur = null
+      for (var k = 0; k < headList.length; k++) {
+        if (headList[k].el.getBoundingClientRect().top <= 72) cur = headList[k]
+        else break
+      }
+      return cur
+    }
+
+    function onScroll() {
+      // 先集中读、后集中写（避免读写交错引发布局抖动）；不走 rAF——标签页失焦时 rAF
+      // 停摆会让节流阀卡死在 true、处理器永久失灵（实机抓过），处理器本身足够便宜
+      var y = window.pageYOffset || document.documentElement.scrollTop || 0
+      var doc = document.documentElement
+      var max = doc.scrollHeight - window.innerHeight
+      var pct = (max > 0 ? Math.min(1, Math.max(0, y / max)) : 0) * 100
+      var deep = y > 320
+      var cur = deep ? currentHeading() : null
+      var navWasHidden = nav ? nav.classList.contains('xw-nav-hide') : false
+      if (nav) {
+        if (y > lastY + 4 && y > 240) nav.classList.add('xw-nav-hide')
+        else if (y < lastY - 4) nav.classList.remove('xw-nav-hide')
+      }
+      lastY = y
+      var show = !!cur && (!nav || nav.classList.contains('xw-nav-hide'))
+      fill.style.width = pct.toFixed(2) + '%'
+      if (show) {
+        chip.textContent = cur.text
+        chip.style.opacity = '1'
+      } else if (navWasHidden || chip.style.opacity === '1') {
+        chip.style.opacity = '0'
+      }
+      if (toc) {
+        for (var id in tocLinks) {
+          if (tocLinks[id].classList.contains('is-current')) tocLinks[id].classList.remove('is-current')
+        }
+        if (cur && tocLinks[cur.id]) tocLinks[cur.id].classList.add('is-current')
+      }
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
   })()
 
   /* ---------------- 会员（/member：登录 / 注册 / 退出，API 见 DEVPLAN 附录 A5） ----------------
