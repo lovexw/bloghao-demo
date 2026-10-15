@@ -2,21 +2,24 @@ import { Hono, type Context } from 'hono'
 import { scheduledBackup } from './backup'
 import { runScheduledPublish } from './scheduler'
 import { api } from './api'
+import { cleanBotPath, identifyBot, purgeBots, recordBot, shouldRecordBot } from './bots'
 import { siteClosedResponse } from './closed'
 import { clientIp, getCookie, rateLimit } from './auth'
-import { ensureSchema, getPostBySlug, getSettings, listCategories, listPublishedTags, listPosts, listSitemapPages, listSitemapPosts } from './db'
+import { ensureSchema, getPostBySlug, getSettings, listCategories, listPosts, listSitemapCategoryLastmod, listSitemapPages, listSitemapPosts, listWeiboLastmod } from './db'
 import { isEn, recordEditionFailure } from './i18n'
 import { mcpRoutes } from './mcp'
 import { goPageHtml, isTrustedOutHost } from './outlink'
+import { imageCacheMatch, imageCachePut, pageCacheMiddleware } from './pagecache'
 import { renderAbout, renderArchive, renderCategory, renderGuestbook, renderHome, renderLinks, renderMember, renderNotFound, renderPage, renderPost, renderRank, renderSearch, renderWeibo } from './pages'
 import { mergeUnlockCookie, PP_COOKIE, PP_TTL_MS, verifyPostPassword } from './protect'
 import { buildJsonFeed, buildRss, buildSitemap } from './rss'
 import { siteBase } from './render'
+import { buildRobotsTxt } from './seo'
 import { purgeVisits } from './stats'
 import { purgeTrash } from './trash'
 import { refreshFootStats } from './db'
 import type { Env, SessionUser } from './types'
-import { isDemo } from './utils'
+import { fmtDate, isDemo } from './utils'
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionUser | null } }>()
 
@@ -51,6 +54,37 @@ app.use('*', async (c, next) => {
   if (res) return res
   await next()
 })
+
+/* ---------------- 爬虫 / AI 抓取识别（src/bots.ts，统计页新维度） ----------------
+ * 爬虫不执行 JS、进不了 visit_log，只能在服务端按 User-Agent 识别后旁路记录。
+ * 只拦公开面：/admin、/api、/images、/mcp 不算「抓内容」；识别不命中（浏览器/未知脚本）
+ * 直接放行零开销。记录走 waitUntil 异步写，绝不阻塞响应；写入闸（去抖 + 预算）在
+ * shouldRecordBot 内部，防穷举路径刷 D1 写配额——见 bots.ts 文件头注释。 */
+const BOT_SKIP_PREFIX = ['/admin', '/api', '/images', '/mcp']
+app.use('*', async (c, next) => {
+  const ua = c.req.header('User-Agent') || ''
+  if (ua) {
+    const bot = identifyBot(ua)
+    if (bot && !BOT_SKIP_PREFIX.some((p) => c.req.path === p || c.req.path.startsWith(p + '/'))) {
+      const qi = c.req.url.indexOf('?')
+      const path = cleanBotPath(qi >= 0 ? c.req.path + c.req.url.slice(qi) : c.req.path)
+      if (path && shouldRecordBot(bot.name, path)) {
+        const country = (c.req.header('CF-IPCountry') || '').slice(0, 8)
+        c.executionCtx.waitUntil(
+          recordBot(c.env.DB, { name: bot.name, kind: bot.kind, path, country }).catch(() => {})
+        )
+      }
+    }
+  }
+  await next()
+})
+
+/* ---------------- 页面边缘缓存（src/pagecache.ts）：公开页 / 订阅源 / 公开只读 API · 匿名访客 · 30 分钟副本 ----------------
+ * 命中直接吐响应跳过 SSR/API 与 D1。登录 Cookie / 演示站 / 灰度一律不进缓存；带 query 走受控
+ * 白名单（page/limit/wb/topic/q/sort/tag 镜像服务端 clamp 语义进键，未知参数 / sort=random 回源）。
+ * 注册位必须在所有页面路由与 /api、/mcp 子应用之前（终点 handler 不调 next），且在闭站 /
+ * 爬虫统计之后；设置变更 saveSettings 自动换代作废，后台「概览 → 系统」可一键清理 */
+app.use('*', pageCacheMiddleware())
 
 app.route('/api', api)
 // MCP 服务器（AI 助手接入，src/mcp.ts）：复用 externalToken 鉴权；闭站中间件自动覆盖（不进白名单）
@@ -198,24 +232,38 @@ app.get('/feed.json', jsonFeedHandler)
 
 app.get('/sitemap.xml', async (c) => {
   const settings = await getSettings(c.env.DB)
-  const [posts, categories, tags, pages] = await Promise.all([
+  const [posts, categories, catLastmod, pages, wbLastmod] = await Promise.all([
     listSitemapPosts(c.env.DB),
     listCategories(c.env.DB),
-    listPublishedTags(c.env.DB),
+    listSitemapCategoryLastmod(c.env.DB),
     listSitemapPages(c.env.DB),
+    listWeiboLastmod(c.env.DB),
   ])
   const siteUrl = siteBase(settings, new URL(c.req.url).origin)
+  const lastmodBySlug = new Map(catLastmod.map((r) => [r.slug, r.lastmod]))
   c.header('Content-Type', 'application/xml; charset=utf-8')
   c.header('Cache-Control', 'public, max-age=600')
-  return c.body(buildSitemap(settings, posts, siteUrl, categories, tags, pages))
+  return c.body(
+    buildSitemap(
+      settings,
+      posts,
+      siteUrl,
+      categories.map((cat) => {
+        const ts = lastmodBySlug.get(cat.slug) || 0
+        return { ...cat, lastmod: ts ? fmtDate(ts) : '' }
+      }),
+      pages,
+      wbLastmod || undefined
+    )
+  )
 })
 
-app.get('/robots.txt', (c) =>
-  isDemo(c.env)
-    ? // 演示站：不希望被搜索引擎收录（内容是种子数据，且闭站页等状态不该进索引）
-      c.text('User-agent: *\nDisallow: /\n')
-    : c.text(`User-agent: *\nAllow: /\nDisallow: /admin\nSitemap: ${new URL(c.req.url).origin}/sitemap.xml\n`)
-)
+/** robots.txt（B20）：内置段 + 后台「设置 → 站点」的 robots 追加段（src/seo.ts buildRobotsTxt）；
+ *  演示站固定整站 Disallow（种子数据与闭站状态不该进索引），追加段不参与 */
+app.get('/robots.txt', async (c) => {
+  const settings = await getSettings(c.env.DB)
+  return c.text(buildRobotsTxt(settings, new URL(c.req.url).origin, isDemo(c.env)))
+})
 
 /* ---------------- R2 图床 ---------------- */
 app.get('/images/*', async (c) => {
@@ -227,6 +275,11 @@ app.get('/images/*', async (c) => {
     /* 保持原样 */
   }
   if (!key.startsWith('u/') && !key.startsWith('og/')) return c.text('Not found', 404)
+  // 图床边缘缓存（src/pagecache.ts imageCacheMatch）：键内容寻址（saveUpload 时间戳+随机数，
+  // 同键永不覆盖），colo 副本命中直接返回，省一次 Worker→R2 的跨境回源；404 不缓存，
+  // If-None-Match 复验也先在边缘层做
+  const hit = await imageCacheMatch(c.req.raw)
+  if (hit) return hit
   const obj = await c.env.IMAGES.get(key)
   if (!obj) return c.text('Not found', 404)
   if (obj.httpEtag && c.req.header('If-None-Match') === obj.httpEtag) {
@@ -243,7 +296,9 @@ app.get('/images/*', async (c) => {
   headers.set('Cache-Control', 'public, max-age=31536000, immutable')
   // 禁止浏览器嗅探内容类型：图床里只允许真正的图片被当图片渲染
   headers.set('X-Content-Type-Options', 'nosniff')
-  return new Response(obj.body, { headers })
+  const res = new Response(obj.body, { headers })
+  imageCachePut(c.req.raw, res, c.executionCtx)
+  return res
 })
 
 /* ---------------- 后台入口 ---------------- */
@@ -288,6 +343,8 @@ export default {
           await scheduledBackup(controller, env)
           // 访客日志滚动清理：visit_log 是日志类数据不进备份，只在这里按保留期删
           await purgeVisits(env.DB).catch((e) => console.error('purgeVisits failed:', e))
+          // 爬虫日志滚动清理：bot_log 同为日志类数据不进备份（src/bots.ts）
+          await purgeBots(env.DB).catch((e) => console.error('purgeBots failed:', e))
           // 回收站滚动清理：到期（30 天）的软删行彻底删除并级联评论（src/trash.ts）
           await purgeTrash(env.DB).catch((e) => console.error('purgeTrash failed:', e))
           // 页脚「站点足迹」统计夜更（db.ts refreshFootStats，页脚名片读 settings.siteFoot）

@@ -368,7 +368,7 @@ async function viewHome() {
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><span>系统</span><a class="btn btn-ghost btn-sm" href="#/settings">设置 →</a></div>
+      <div class="panel-head"><span>系统</span><span style="display:flex;gap:8px;"><button class="btn btn-ghost btn-sm" data-act="purge-cache">清理缓存</button><a class="btn btn-ghost btn-sm" href="#/settings">设置 →</a></span></div>
       <div class="panel-body" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
         <div><div class="stat-value" style="font-size:20px;">${s.db.weibo}<small>条微博</small></div></div>
         <div><div class="stat-value" style="font-size:20px;">${s.db.comments}<small>条评论</small></div></div>
@@ -378,6 +378,19 @@ async function viewHome() {
       </div>
     </div>`
   )
+  // 一键清理页面缓存（src/pagecache.ts）：换 epoch 让旧边缘副本整代作废，访客即刻看到最新页面
+  const purgeBtn = $app.querySelector('[data-act=purge-cache]')
+  if (purgeBtn) purgeBtn.addEventListener('click', async () => {
+    purgeBtn.disabled = true
+    try {
+      await api('/admin/cache/purge', { method: 'POST' })
+      toast('页面缓存已清理，访客即刻看到最新页面')
+    } catch (e) {
+      toast(e.message || '清理失败，请重试', true)
+    } finally {
+      purgeBtn.disabled = false
+    }
+  })
 }
 
 /* ---------------- 访客统计（#/stats，数据来自 /api/admin/visits，见 src/stats.ts） ---------------- */
@@ -386,28 +399,32 @@ const BR_NAME = { wechat: '微信', chrome: 'Chrome', edge: 'Edge', firefox: 'Fi
 const CC_NAME = {
   CN: '中国大陆', HK: '中国香港', MO: '中国澳门', TW: '中国台湾', US: '美国', JP: '日本', KR: '韩国',
   SG: '新加坡', MY: '马来西亚', TH: '泰国', VN: '越南', GB: '英国', DE: '德国', FR: '法国', CA: '加拿大',
-  AU: '澳大利亚', RU: '俄罗斯', IN: '印度', NL: '荷兰', BR: '巴西',
+  AU: '澳大利亚', RU: '俄罗斯', IN: '印度', NL: '荷兰', BR: '巴西', IE: '爱尔兰',
 }
 const STATS_DAYS = [7, 30, 90]
+/* 爬虫分类（src/bots.ts BOT_KIND_NAME 的前端镜像：ai/se/feed/seo/arch） */
+const BOT_KIND_CN = { ai: 'AI 抓取', se: '搜索引擎', feed: '订阅器', seo: 'SEO 工具', arch: '网页存档' }
+const BOT_KIND_CLS = { ai: 'bk-ai', se: 'bk-se', feed: 'bk-feed', seo: 'bk-seo', arch: 'bk-arch' }
 
 /** 横条排行（来源 / 设备 / 浏览器 / 国家） */
-function hbarRows(items, nameFn) {
-  if (!items.length) return '<div class="empty-box">暂无数据</div>'
-  const max = Math.max(...items.map((x) => x.pv), 1)
+function hbarRows(items, nameFn, valueFn) {
+  if (!items.length) return '<div class="empty-box empty-sm">暂无数据</div>'
+  const max = Math.max(...items.map((x) => (valueFn ? valueFn(x) : x.pv)), 1)
   return items
-    .map(
-      (x) => `<div class="hbar-row">
+    .map((x) => {
+      const v = valueFn ? valueFn(x) : x.pv
+      return `<div class="hbar-row">
         <span class="hbar-name" title="${esc(nameFn(x))}">${esc(nameFn(x))}</span>
-        <span class="hbar-track"><span class="hbar-fill" style="width:${Math.max(2, Math.round((x.pv / max) * 100))}%"></span></span>
-        <span class="hbar-num">${x.pv}</span>
+        <span class="hbar-track"><span class="hbar-fill" style="width:${Math.max(2, Math.round((v / max) * 100))}%"></span></span>
+        <span class="hbar-num">${v}</span>
       </div>`
-    )
+    })
     .join('')
 }
 
 /** 每日趋势：PV 柱 + UV 折线，自绘 SVG（零依赖），悬停整列出数值 */
 function trendChart(series) {
-  const W = 720, H = 210, padL = 40, padR = 8, padT = 12, padB = 24
+  const W = 720, H = 200, padL = 36, padR = 8, padT = 12, padB = 22
   const n = series.length
   if (!n) return ''
   const iw = W - padL - padR
@@ -428,16 +445,16 @@ function trendChart(series) {
     if (i % tickEvery === 0 || i === n - 1) {
       // 最后一个刻度右对齐贴边，放大字号后中锚文字会溢出 viewBox 被裁
       if (i === n - 1) {
-        marks += `<text x="${W - padR}" y="${H - 6}" text-anchor="end" class="chart-tick">${esc(d.day.slice(5))}</text>`
+        marks += `<text x="${W - padR}" y="${H - 5}" text-anchor="end" class="chart-tick">${esc(d.day.slice(5))}</text>`
       } else {
-        marks += `<text x="${(x + step / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle" class="chart-tick">${esc(d.day.slice(5))}</text>`
+        marks += `<text x="${(x + step / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle" class="chart-tick">${esc(d.day.slice(5))}</text>`
       }
     }
   })
   let grid = ''
   for (let g = 0; g <= 3; g++) {
     const y = padT + (ih * g) / 3
-    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="chart-tick">${Math.round((maxV * (3 - g)) / 3)}</text>`
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 5}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" class="chart-tick">${Math.round((maxV * (3 - g)) / 3)}</text>`
   }
   const hovers = series
     .map((d, i) => {
@@ -450,7 +467,7 @@ function trendChart(series) {
 
 /** 今日 24 小时分布（北京时间） */
 function hourChart(hourly) {
-  const W = 720, H = 150, padL = 40, padR = 8, padT = 10, padB = 22
+  const W = 720, H = 140, padL = 36, padR = 8, padT = 10, padB = 20
   const iw = W - padL - padR
   const ih = H - padT - padB
   const maxV = Math.max(...hourly.map((x) => x.pv), 5)
@@ -466,14 +483,80 @@ function hourChart(hourly) {
     marks += `<rect x="${x.toFixed(1)}" y="${padT}" width="${step.toFixed(1)}" height="${ih}" fill="transparent"><title>${d.h}:00–${d.h + 1}:00：${d.pv} 次浏览</title></rect>`
   })
   for (const hh of [0, 6, 12, 18]) {
-    marks += `<text x="${(padL + hh * step + step / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle" class="chart-tick">${hh}时</text>`
+    marks += `<text x="${(padL + hh * step + step / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle" class="chart-tick">${hh}时</text>`
   }
   let grid = ''
   for (let g = 0; g <= 2; g++) {
     const y = padT + (ih * g) / 2
-    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="chart-tick">${Math.round((maxV * (2 - g)) / 2)}</text>`
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 5}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" class="chart-tick">${Math.round((maxV * (2 - g)) / 2)}</text>`
   }
   return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="今日小时分布">${grid}${marks}</svg>`
+}
+
+/** 爬虫抓取趋势（按天柱状）：与 hourChart 同构，AI 抓取那部分叠深色 */
+function botChart(series) {
+  const W = 720, H = 140, padL = 36, padR = 8, padT = 10, padB = 20
+  const n = series.length
+  if (!n) return ''
+  const iw = W - padL - padR
+  const ih = H - padT - padB
+  const maxV = Math.max(...series.map((d) => d.pv), 5)
+  const step = iw / n
+  const barW = Math.max(1, Math.min(step * 0.6, 24))
+  const tickEvery = Math.ceil(n / 6)
+  let marks = ''
+  series.forEach((d, i) => {
+    const x = padL + i * step
+    if (d.pv > 0) {
+      const h = Math.max(1, (d.pv / maxV) * ih)
+      const ah = d.ai > 0 ? Math.max(1, Math.min(h, (d.ai / maxV) * ih)) : 0
+      marks += `<rect x="${(x + (step - barW) / 2).toFixed(1)}" y="${(padT + ih - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="var(--sub)" opacity="0.45"/>`
+      if (ah > 0) {
+        marks += `<rect x="${(x + (step - barW) / 2).toFixed(1)}" y="${(padT + ih - ah).toFixed(1)}" width="${barW.toFixed(1)}" height="${ah.toFixed(1)}" rx="1.5" fill="var(--accent)" opacity="0.85"/>`
+      }
+    }
+    if (i % tickEvery === 0 || i === n - 1) {
+      if (i === n - 1) {
+        marks += `<text x="${W - padR}" y="${H - 5}" text-anchor="end" class="chart-tick">${esc(d.day.slice(5))}</text>`
+      } else {
+        marks += `<text x="${(x + step / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle" class="chart-tick">${esc(d.day.slice(5))}</text>`
+      }
+    }
+  })
+  let grid = ''
+  for (let g = 0; g <= 2; g++) {
+    const y = padT + (ih * g) / 2
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 5}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" class="chart-tick">${Math.round((maxV * (2 - g)) / 2)}</text>`
+  }
+  const hovers = series
+    .map((d, i) => {
+      const x = padL + i * step
+      const se = d.pv - d.ai
+      return `<rect x="${x.toFixed(1)}" y="${padT}" width="${step.toFixed(1)}" height="${ih}" fill="transparent"><title>${d.day}：共 ${d.pv}（AI ${d.ai} · 搜索引擎 ${se}）</title></rect>`
+    })
+    .join('')
+  return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="爬虫抓取趋势">${grid}${marks}${hovers}</svg>`
+}
+
+/** 最近抓取流水行：爬虫徽章 + 路径 + 相对时间 */
+function botTime(ts) {
+  const diff = Date.now() - ts
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前'
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小时前'
+  return Math.floor(diff / 86_400_000) + ' 天前'
+}
+
+function botLatestRows(latest) {
+  return latest
+    .map(
+      (b) => `<div class="bot-feed-row">
+        <span class="bot-chip ${BOT_KIND_CLS[b.kind] || ''}" title="${esc(BOT_KIND_CN[b.kind] || b.kind)}">${esc(b.name)}</span>
+        <span class="bot-feed-path" title="${esc(b.path)}">${esc(b.path)}</span>
+        <span class="bot-feed-time">${botTime(b.ts)}</span>
+      </div>`
+    )
+    .join('')
 }
 
 async function viewStats() {
@@ -503,10 +586,58 @@ async function viewStats() {
   const trendBody = hasData
     ? `<div class="chart-legend"><span><i class="lg-bar"></i>浏览量</span><span><i class="lg-line"></i>访客数</span></div>${trendChart(s.series)}`
     : '<div class="empty-box">还没有访客数据。功能上线后有人访问就会出现，也可以先自己逛一逛。</div>'
+
+  /* 爬虫 / AI 抓取维度（src/bots.ts，服务端按 UA 识别；爬虫不执行 JS 进不了访客统计） */
+  const b = s.bot || { total: 0, todayTotal: 0, byKind: [], byBot: [], topPaths: [], series: [], latest: [] }
+  const botKinds = b.byKind
+    .map(
+      (k) => `<span class="bot-kind-pill ${BOT_KIND_CLS[k.name] || ''}">${esc(BOT_KIND_CN[k.name] || k.name)}<b>${k.pv}</b></span>`
+    )
+    .join('')
+  const botChartBody = b.total
+    ? `<div class="chart-legend"><span><i class="lg-bar lg-ai"></i>AI 抓取</span><span><i class="lg-bar lg-se"></i>其他爬虫</span></div>${botChart(b.series)}`
+    : '<div class="empty-box empty-sm">还没有识别到爬虫。抓取记录由服务端自动生成（爬虫不执行 JS，与上面的访客数据互不影响）。</div>'
+  const botPanel = `
+    <div class="panel" id="bot-panel">
+      <div class="panel-head"><span>AI 与爬虫抓取</span><span class="panel-head-sub">近 ${days} 天 · 按浏览器 UA 识别，仅服务端可见的抓取</span></div>
+      <div class="panel-body">
+        ${
+          b.total
+            ? `<div class="bot-headline">
+                <span class="bot-total">${b.total}</span>
+                <span class="bot-total-sub">次抓取<b>${b.todayTotal ? `，今天 ${b.todayTotal}` : ''}</b></span>
+              </div>
+              <div class="bot-kinds">${botKinds}</div>
+              ${botChartBody}
+              <div class="bot-cols">
+                <div>
+                  <div class="bot-col-title">谁在抓</div>
+                  ${hbarRows(
+                    b.byBot,
+                    (x) => x.name,
+                    (x) => x.pv
+                  )}
+                </div>
+                <div>
+                  <div class="bot-col-title">被抓的页面</div>
+                  ${hbarRows(
+                    b.topPaths,
+                    (x) => x.path,
+                    (x) => x.pv
+                  )}
+                </div>
+              </div>
+              <div class="bot-col-title bot-feed-title">最近抓取</div>
+              ${botLatestRows(b.latest)}`
+            : botChartBody
+        }
+      </div>
+    </div>`
+
   await shellView(
     'stats',
     `<div class="page-head">
-      <div><div class="page-title">统计</div><div class="page-sub">访客都在看什么、从哪里来（数据来自前台页面访问，后台自身不计入）</div></div>
+      <div><div class="page-title">统计</div><div class="page-sub">访客都在看什么、从哪里来；AI 与搜索引擎在抓什么（后台自身不计入）</div></div>
     </div>
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">浏览量（${days} 天）</div><div class="stat-value">${s.pv}</div></div>
@@ -518,13 +649,20 @@ async function viewStats() {
       <div class="panel-head"><span>访问趋势</span><div class="tabs">${tabs}</div></div>
       <div class="panel-body">${trendBody}</div>
     </div>
-    <div class="panel">
-      <div class="panel-head"><span>今日小时分布</span><span class="panel-head-sub">北京时间</span></div>
-      <div class="panel-body">${s.todayPv ? hourChart(s.hourly) : '<div class="empty-box">今天还没有访问</div>'}</div>
+    ${botPanel}
+    <div class="stats-duo">
+      <div class="panel">
+        <div class="panel-head"><span>今日小时分布</span><span class="panel-head-sub">北京时间</span></div>
+        <div class="panel-body">${s.todayPv ? hourChart(s.hourly) : '<div class="empty-box empty-sm">今天还没有访问</div>'}</div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>访客设备</span></div>
+        <div class="panel-body">${hbarRows(s.devices, (x) => DEV_NAME[x.name] || x.name || '未知')}</div>
+      </div>
     </div>
     <div class="panel">
       <div class="panel-head"><span>受欢迎的页面</span><span class="panel-head-sub">近 ${days} 天 · 点标题可打开页面</span></div>
-      <div class="panel-body">${pages || '<div class="empty-box">暂无数据</div>'}</div>
+      <div class="panel-body">${pages || '<div class="empty-box empty-sm">暂无数据</div>'}</div>
     </div>
     <div class="stats-duo">
       <div class="panel">
@@ -532,19 +670,13 @@ async function viewStats() {
         <div class="panel-body">${hbarRows(s.topRefs, (x) => x.ref)}</div>
       </div>
       <div class="panel">
-        <div class="panel-head"><span>访客设备</span></div>
-        <div class="panel-body">${hbarRows(s.devices, (x) => DEV_NAME[x.name] || x.name || '未知')}</div>
-      </div>
-    </div>
-    <div class="stats-duo">
-      <div class="panel">
         <div class="panel-head"><span>浏览器</span></div>
         <div class="panel-body">${hbarRows(s.browsers, (x) => BR_NAME[x.name] || x.name || '未知')}</div>
       </div>
-      <div class="panel">
-        <div class="panel-head"><span>国家 / 地区</span></div>
-        <div class="panel-body">${hbarRows(s.countries, (x) => CC_NAME[x.name] || x.name)}</div>
-      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span>国家 / 地区</span></div>
+      <div class="panel-body">${hbarRows(s.countries, (x) => CC_NAME[x.name] || x.name)}</div>
     </div>`
   )
   $app.querySelectorAll('.tab[data-days]').forEach((t) =>
@@ -716,12 +848,16 @@ async function viewWeibo() {
     toast('所编辑的微博不在本页，已切回新建')
   }
   const images = wbEditing ? [...wbEditing.images] : []
+  // 单视频（B19）：编辑态回填，保存时显式回传（null = 清除；缺键 = 服务端保留原值）
+  let wbVideo = wbEditing?.video ? { ...wbEditing.video } : null
+  let wbVideoMeta = ''
   const rows = d.items
     .map(
       (w) => `<div class="wb-row" data-id="${w.id}">
       <div class="wb-row-main">
         <div class="wb-row-text">${w.content ? esc(w.content) : '<span class="dim">（无文字）</span>'}</div>
         ${w.imageList.length ? `<div class="wb-row-thumbs">${w.imageList.map((u) => `<img src="${esc(u)}" loading="lazy" alt="">`).join('')}</div>` : ''}
+        ${w.videoView ? `<div class="wb-row-thumbs">${videoThumbHtml(w.videoView)}</div>` : ''}
         <div class="wb-row-meta">
           ${w.status === 'published' ? '<span class="chip chip-green">已发布</span>' : '<span class="chip chip-gray">草稿</span>'}
           ${w.pinned ? '<span class="chip chip-warn">置顶</span>' : ''}
@@ -750,10 +886,11 @@ async function viewWeibo() {
     `<div class="page-head"><div><div class="page-title">微博</div><div class="page-sub">随手记：短文字 + 图片，不用起标题</div></div></div>
     <div class="panel wb-composer">
       <textarea class="textarea wb-input" id="wb-content" maxlength="${WB_MAX_CHARS}" placeholder="有什么新鲜事？">${esc(wbEditing?.content || '')}</textarea>
-      <div class="wb-hint">支持 ⌘/Ctrl+V 粘贴截图、把图片拖进来，或点下方「加图」；正文里写 #话题 即可归类并高亮，如 #晚餐日记</div>
+      <div class="wb-hint">支持 ⌘/Ctrl+V 粘贴截图或视频、把文件拖进来，或点下方「加图」；正文里写 #话题 即可归类并高亮，如 #晚餐日记</div>
       <div class="wb-imgs" id="wb-imgs"></div>
+      <div class="wb-imgs" id="wb-video-box"></div>
       <div class="wb-composer-foot">
-        <button class="btn btn-ghost btn-sm" id="wb-add-img" type="button">${I.image} 加图（${images.length}/${WB_MAX_IMAGES}）</button>
+        <button class="btn btn-ghost btn-sm" id="wb-add-img" type="button" title="图片 / 视频，一条微博最多 1 个视频">${I.image} 加图（${images.length}/${WB_MAX_IMAGES}）</button>
         <button class="btn btn-ghost btn-sm" id="wb-emoji" type="button">😊 表情</button>
         <span class="wb-count" id="wb-count">${(wbEditing?.content || '').length} / ${WB_MAX_CHARS}</span>
         <span class="spacer"></span>
@@ -801,6 +938,73 @@ async function viewWeibo() {
     addImgBtn.innerHTML = `${I.image} 加图（${images.length}/${WB_MAX_IMAGES}）`
   }
 
+  /** 视频预览（单视频，B19）：复用图片格容器（.wb-imgs:empty 自动隐藏） */
+  function renderVideo() {
+    const box = document.getElementById('wb-video-box')
+    box.innerHTML = wbVideo
+      ? `<span class="wb-tile wb-tile--video" title="${esc(wbVideoMeta)}"><video src="${esc(wbVideo.url)}"${
+          wbVideo.poster ? ` poster="${esc(wbVideo.poster)}"` : ''
+        } muted playsinline preload="metadata"></video><button class="wb-tile-del" data-video-del type="button" title="移除">×</button></span>`
+      : ''
+    box.querySelector('[data-video-del]')?.addEventListener('click', () => {
+      wbVideo = null
+      wbVideoMeta = ''
+      renderVideo()
+    })
+  }
+
+  /** 加视频：类型 / 体积前置校验 + 上传进度 + 封面帧（best-effort），与前台发布器同一套口径 */
+  async function addVideoFile(file) {
+    if (wbVideo) return toast('一条微博只能带一个视频，先移除当前视频', true)
+    if (!isVideoFile(file)) return toast('只支持 MP4 / WebM 视频', true)
+    if (file.size > VIDEO_MAX_BYTES) return toast(`视频不能超过 25MB，当前 ${fmtSize(file.size)}`, true)
+    const label = addImgBtn.innerHTML
+    wbUploading++
+    addImgBtn.disabled = true
+    try {
+      const prep = await prepareVideo(file)
+      if (prep.error) return toast('只支持 MP4 / WebM 视频', true)
+      const up = await uploadFile(prep.file, (p) => (addImgBtn.textContent = `上传视频 ${p}%`))
+      wbVideo = { url: up.url, poster: '', w: 0, h: 0 }
+      wbVideoMeta = fmtSize(file.size)
+      renderVideo()
+      // HEVC（iPhone 默认的高效格式）只在部分浏览器能放：如实提示，让站长自己决定要不要换格式
+      if (prep.hevc) toast('HEVC 高效格式：iPhone / Mac 正常，部分 Windows 浏览器放不出来（想更稳就用剪辑 App 导出 MP4）')
+      // 封面帧慢一步补传：拿不到就保持无封面（视频照常可播），不阻塞保存
+      const shot = await grabVideoPoster(prep.file)
+      if (shot && wbVideo && wbVideo.url === up.url) {
+        try {
+          const poster = await uploadFile(new File([shot.blob], 'poster.jpg', { type: 'image/jpeg' }), null)
+          if (wbVideo && wbVideo.url === up.url) {
+            wbVideo.poster = poster.url
+            if (!wbVideo.w) {
+              wbVideo.w = shot.w
+              wbVideo.h = shot.h
+            }
+            renderVideo()
+          }
+        } catch (e) {
+          /* 封面帧失败不算错误：卡片退化成无封面 */
+        }
+      }
+    } catch (e) {
+      toast(e.message, true)
+    } finally {
+      wbUploading--
+      addImgBtn.innerHTML = label
+      renderVideo()
+    }
+  }
+
+  /** 粘贴 / 拖拽统一入口：视频走单视频通道，其余按图片处理（同一次操作可各收一份） */
+  async function addMediaFiles(files) {
+    const list = [...(files || [])]
+    const vid = list.find((f) => isVideoFile(f))
+    if (vid) await addVideoFile(vid)
+    const rest = list.filter((f) => f !== vid)
+    if (rest.length) await addImageFiles(rest)
+  }
+
   /** 加图统一入口：文件选择 / 粘贴 / 拖拽共用，自动过滤非图片并尊重 9 图上限 */
   let wbUploading = 0 // 在途上传计数：发布/存草稿前必须归零（同前台发布器 cpUploading 口径），防半截图发出
   async function addImageFiles(fileList) {
@@ -832,7 +1036,9 @@ async function viewWeibo() {
   }
 
   function pickImages() {
-    pickFiles('image/jpeg,image/png,image/webp,image/gif', true, (files) => addImageFiles(files))
+    // 图片与视频共用一个入口（站长 2026-10-13 拍板）：accept 里必须写 video/*（枚举具体类型会让
+    // iOS 图库筛掉 iPhone 拍的 .mov），选完由 addMediaFiles 分流——视频只取第一个，其余按图片走
+    pickFiles(`image/jpeg,image/png,image/webp,image/gif,${VIDEO_ACCEPT}`, true, (files) => addMediaFiles(files))
   }
 
   // 粘贴图片：光标在发布器内 ⌘/Ctrl+V 即上传（纯文本粘贴不受影响）
@@ -840,7 +1046,7 @@ async function viewWeibo() {
     const files = [...(e.clipboardData?.files || [])]
     if (!files.length) return
     e.preventDefault()
-    await addImageFiles(files)
+    await addMediaFiles(files)
   })
 
   // 拖拽图片到发布器（拖文本进输入框仍是默认行为）
@@ -855,24 +1061,24 @@ async function viewWeibo() {
     if (!files.length) return
     e.preventDefault()
     composer.classList.remove('is-dragover')
-    await addImageFiles(files)
+    await addMediaFiles(files)
   })
 
   async function saveWeibo(status) {
     const content = contentEl.value.trim()
-    if (!content && !images.length) return toast('写点什么，或者配张图吧', true)
-    // 二道防线：上传未完就点发布，微博会以缺图状态发出（图片还在闭包里推）
-    if (wbUploading > 0) return toast('还有图片在上传中，稍等一下', true)
+    if (!content && !images.length && !wbVideo) return toast('写点什么，或者配张图 / 加段视频吧', true)
+    // 二道防线：上传未完就点发布，微博会以缺媒体状态发出（文件还在闭包里推）
+    if (wbUploading > 0) return toast('还有图片/视频在上传中，稍等一下', true)
     // 请求期间禁用全部按钮：连击会重复发微博
     const btns = ['wb-save', 'wb-publish', 'wb-draft'].map((id) => document.getElementById(id)).filter(Boolean)
     btns.forEach((b) => (b.disabled = true))
     try {
       if (wbEditing) {
-        await api(`/admin/weibo/${wbEditing.id}`, { method: 'PUT', body: { content, images, status: wbEditing.status } })
+        await api(`/admin/weibo/${wbEditing.id}`, { method: 'PUT', body: { content, images, video: wbVideo, status: wbEditing.status } })
         wbEditing = null
         toast('已保存')
       } else {
-        await api('/admin/weibo', { method: 'POST', body: { content, images, status } })
+        await api('/admin/weibo', { method: 'POST', body: { content, images, video: wbVideo, status } })
         toast(status === 'published' ? '已发布 🎉' : '草稿已保存')
       }
       navigate() // 操作后重渲染当前路由（经 navigate 守卫，用户已切页时不拽回）
@@ -885,6 +1091,7 @@ async function viewWeibo() {
   }
 
   renderImgs()
+  renderVideo()
   if (wbEditing) window.scrollTo({ top: 0 })
   contentEl.addEventListener('input', () => (countEl.textContent = `${contentEl.value.length} / ${WB_MAX_CHARS}`))
   addImgBtn.addEventListener('click', pickImages)
@@ -905,7 +1112,7 @@ async function viewWeibo() {
     const id = Number(row.dataset.id)
     const w = d.items.find((x) => String(x.id) === String(id))
     row.querySelector('[data-act=edit]').addEventListener('click', () => {
-      wbEditing = { id: w.id, content: w.content, images: [...w.imageList], status: w.status }
+      wbEditing = { id: w.id, content: w.content, images: [...w.imageList], video: w.videoView || null, status: w.status }
       navigate() // 操作后重渲染当前路由（经 navigate 守卫，用户已切页时不拽回）
     })
     row.querySelector('[data-act=pin]')?.addEventListener('click', async () => {
@@ -1206,6 +1413,7 @@ async function viewPostTaxonomy() {
       <div class="cat-main">
         <span class="cat-name">${esc(c.name)}</span>
         <span class="cat-slug">/category/${esc(c.slug)} · ${c.post_count ?? 0} 篇</span>
+        ${c.description ? `<span class="cat-slug">${esc(String(c.description).slice(0, 80))}</span>` : ''}
       </div>
       <div class="post-ops">
         <button class="btn btn-ghost btn-sm" data-act="edit">编辑</button>
@@ -1313,6 +1521,7 @@ async function viewPostTaxonomy() {
         <div class="modal-body">
           <label class="auth-field"><label>名称</label><input class="input" id="cat-edit-name" value="${esc(cat.name)}" maxlength="20"></label>
           <label class="auth-field" style="margin-top:10px;"><label>链接标识（字母 / 数字 / 中文 / 短横线）</label><input class="input" id="cat-edit-slug" value="${esc(cat.slug)}"></label>
+          <label class="auth-field" style="margin-top:10px;"><label>分类描述（可选，一行说明：显示在分类页页头，也作为该页的搜索引擎摘要）</label><textarea class="textarea" id="cat-edit-desc" rows="2" maxlength="300" placeholder="这个分类收些什么">${esc(cat.description || '')}</textarea></label>
         </div>
         <div class="modal-foot"><button class="btn" data-close>取消</button><button class="btn btn-primary" id="cat-edit-save">保存</button></div>`)
       m.mask.querySelector('#cat-edit-save').addEventListener('click', async () => {
@@ -1324,6 +1533,7 @@ async function viewPostTaxonomy() {
             body: {
               name: m.mask.querySelector('#cat-edit-name').value.trim(),
               slug: m.mask.querySelector('#cat-edit-slug').value.trim(),
+              description: m.mask.querySelector('#cat-edit-desc').value.trim(),
             },
           })
           toast('已保存')
@@ -2582,6 +2792,23 @@ async function viewSettings() {
     </div>
 
     <div class="panel" style="padding:20px;">
+      <div class="form-section"><h3>SEO 与统计</h3><div class="sec-desc">搜索引擎验证、第三方统计脚本与 robots.txt 追加规则；三项都可留空</div>
+        <div class="form-item">
+          <label>站点验证标签（一行一个，直接粘贴站长平台给的 meta 标签；支持 Google / Bing / 百度 / 搜狗 / 360 / Yandex 等验证字段）</label>
+          <textarea class="textarea" id="st-verifyMetas" rows="3" placeholder="&lt;meta name=&quot;google-site-verification&quot; content=&quot;xxxx&quot;&gt;">${esc(s.verifyMetas || '')}</textarea>
+        </div>
+        <div class="form-item">
+          <label>统计脚本（第三方统计的 script 标签或脚本地址，仅 https；Umami / Plausible / CF Web Analytics / 51la 这类「地址 + data-* 配置」的都能用，需要内联配置代码的 GA4 / GTM 不支持）</label>
+          <textarea class="textarea" id="st-analyticsScript" rows="2" placeholder="&lt;script defer src=&quot;https://…/script.js&quot; data-website-id=&quot;…&quot;&gt;&lt;/script&gt;">${esc(s.analyticsScript || '')}</textarea>
+        </div>
+        <div class="form-item">
+          <label>robots.txt 追加段（附在内置规则之后：额外 Sitemap、屏蔽目录等；演示站固定整站 Disallow，不看这段）</label>
+          <textarea class="textarea" id="st-robotsExtra" rows="3" placeholder="Disallow: /drafts/">${esc(s.robotsExtra || '')}</textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="padding:20px;">
       <div class="form-section"><h3>语言版本（英文测试版 English 0.1）</h3><div class="sec-desc">前台界面语言：文章与微博正文保持原文，仅界面文案切换。英文版渲染出现异常时会自动回退中文版，并在后台顶部提醒；重新开启即重置异常状态</div>
         <label class="mode-row"><input type="radio" name="st-edition" value="zh"><span class="mode-text"><b>中文（默认）</b><i>前台保持中文界面</i></span></label>
         <label class="mode-row"><input type="radio" name="st-edition" value="en"><span class="mode-text"><b>English 0.1（英文测试版）</b><i>前台界面切换为英文并在页面顶部公示测试版横幅；测试期间搜索引擎不收录（noindex），出问题自动回退中文版</i></span></label>
@@ -2641,7 +2868,7 @@ async function viewSettings() {
 
     <div class="stab-pane" data-pane="advance" hidden>
     <div class="panel" style="padding:20px;">
-      <div class="form-section"><h3>站点状态</h3><div class="sec-desc">特殊时刻的全站开关：两个都是可逆的，随时保存随时恢复</div>
+      <div class="form-section"><h3>站点状态</h3><div class="sec-desc">特殊时刻的全站开关：都是可逆的，随时保存随时恢复</div>
         <div class="switch-row">
           <div><div class="switch-label">灰度模式</div><div class="switch-sub">全站去色显示（黑白），用于哀悼、纪念等特殊时刻；后台不受影响</div></div>
           <label class="switch"><input type="checkbox" id="st-siteGrayscale" ${s.siteGrayscale === '1' ? 'checked' : ''}><span class="track"></span></label>
@@ -2651,6 +2878,10 @@ async function viewSettings() {
           <label class="switch"><input type="checkbox" id="st-siteClosed" ${s.siteClosed === '1' ? 'checked' : ''} ${state.demo ? 'disabled' : ''}><span class="track"></span></label>
         </div>
         <div class="form-item"><label>闭站公告（展示在闭站页，支持换行；留空使用默认文案）</label><textarea class="textarea" id="st-siteClosedMessage" rows="3" maxlength="1000" placeholder="本站暂时关闭，请稍后再来。" ${state.demo ? 'disabled' : ''}>${esc(s.siteClosedMessage || '')}</textarea></div>
+        <div class="switch-row">
+          <div><div class="switch-label">禁止搜索引擎收录（noindex）</div><div class="switch-sub">开启后全站页面加 noindex 标记、robots.txt 整站禁止抓取：页面照常可访问，只是不再被搜索引擎收录。适合空白模板站、镜像站或临时预览实例；正式运营的博客不要开</div></div>
+          <label class="switch"><input type="checkbox" id="st-siteNoindex" ${s.siteNoindex === '1' ? 'checked' : ''}><span class="track"></span></label>
+        </div>
       </div>
     </div>
 
@@ -2896,6 +3127,7 @@ async function viewSettings() {
       siteGrayscale: g('st-siteGrayscale').checked ? '1' : '0',
       siteClosed: g('st-siteClosed').checked ? '1' : '0',
       siteClosedMessage: g('st-siteClosedMessage').value.trim(),
+      siteNoindex: g('st-siteNoindex').checked ? '1' : '0',
       telegramBotToken: g('st-telegramBotToken').value.trim(),
       telegramAllowFrom: g('st-telegramAllowFrom').value.trim(),
       tgChannelChatId: g('st-tgChannelChatId').value.trim(),
@@ -2909,6 +3141,9 @@ async function viewSettings() {
       rssFullText: g('st-rssFullText').checked ? '1' : '0',
       backupEnabled: g('st-backupEnabled').checked ? '1' : '0',
       statsEnabled: g('st-statsEnabled').checked ? '1' : '0',
+      verifyMetas: g('st-verifyMetas').value.trim(),
+      analyticsScript: g('st-analyticsScript').value.trim(),
+      robotsExtra: g('st-robotsExtra').value,
     }
     // 关站是全站 503 的大动作：开启瞬间必须明确确认（取消时不动按钮状态）
     if (body.siteClosed === '1' && !wasClosed) {
@@ -3042,6 +3277,124 @@ async function viewSettings() {
  * 已与编辑器策略漂移——现共用一份实现）：JPEG/PNG/WebP 超 150KB 或最长边超 2000px 时先降尺寸再编码，
  * 优先转 WebP（质量 0.75，透明不丢），旧浏览器回退 JPEG/PNG（0.82）；GIF 动图会压丢帧，原样直传；
  * 产物不比原图小用原图；失败回退原文件。 */
+
+/* ---------------- 微博视频工具（B19）：体积上限与 src/store.ts MAX_UPLOAD_BYTES 同口径 ---------------- */
+const VIDEO_MAX_BYTES = 25 * 1024 * 1024
+// accept 用 video/*：iOS 的「照片图库」选择器按 accept 过滤，只列 video/mp4 会把 iPhone 拍的
+// .mov 视频整批筛掉（图库里一个视频都不显示）；真正的格式把关在 prepareVideo 里做
+const VIDEO_ACCEPT = 'video/*'
+const VIDEO_EXT_RE = /\.(mp4|webm|mov)$/i
+/** 选中的文件按视频处理（真正的格式判定在 prepareVideo）；少数安卓浏览器 file.type 为空，按扩展名兜底 */
+const isVideoFile = (f) => !!f && (/^video\//i.test(f.type || '') || (!f.type && VIDEO_EXT_RE.test(f.name || '')))
+
+/**
+ * ISO-BMFF 容器归一化：iPhone 拍的是 .mov（ftyp 主品牌 'qt  '），结构本就是 ISO-BMFF，
+ * 但浏览器与「只收 mp4/webm」的上传端点都不认 QuickTime 容器。这里原地把 ftyp 里的 'qt  '
+ * 改写成 'isom'（标准 mp4 品牌）：H.264 / AAC 的 iPhone 视频改完即全平台可放。
+ * 改了返回 true；没找到 ftyp 或品牌不是 qt 返回 false。
+ */
+function patchFtypBrand(head) {
+  let at = -1
+  for (let i = 0; i + 8 <= head.length; i++) {
+    if (head[i] === 0x66 && head[i + 1] === 0x74 && head[i + 2] === 0x79 && head[i + 3] === 0x70) {
+      at = i // 'ftyp'
+      break
+    }
+  }
+  if (at < 4) return false
+  const size = (head[at - 4] << 24) | (head[at - 3] << 16) | (head[at - 2] << 8) | head[at - 1]
+  const end = size > 16 && size <= head.length ? at - 4 + size : head.length
+  let patched = false
+  for (let j = at + 4; j + 4 <= end; j += 4) {
+    // 品牌位按 4 字节对齐：'qt  ' 与 'qt' 两种写法都认
+    if (head[j] === 0x71 && head[j + 1] === 0x74 && (head[j + 2] === 0x20 || head[j + 3] === 0x20)) {
+      head[j] = 0x69 // i
+      head[j + 1] = 0x73 // s
+      head[j + 2] = 0x6f // o
+      head[j + 3] = 0x6d // m
+      patched = true
+    }
+  }
+  return patched
+}
+
+/** 粗略探测有没有 HEVC（'hvc1' / 'hev1' 样本描述）：moov 在头或在尾，前后各扫 1MB 就够 */
+async function detectHevc(file) {
+  const MAX = 1024 * 1024
+  const parts = [file.slice(0, Math.min(MAX, file.size))]
+  if (file.size > MAX) parts.push(file.slice(Math.max(0, file.size - MAX)))
+  for (const p of parts) {
+    const b = new Uint8Array(await p.arrayBuffer())
+    for (let j = 0; j + 4 <= b.length; j++) {
+      if (
+        (b[j] === 0x68 && b[j + 1] === 0x76 && b[j + 2] === 0x63 && b[j + 3] === 0x31) ||
+        (b[j] === 0x68 && b[j + 1] === 0x65 && b[j + 2] === 0x76 && b[j + 3] === 0x31)
+      )
+        return true
+    }
+  }
+  return false
+}
+
+/** 上传前的视频整理：mp4 / webm 原样；ISO-BMFF 的 .mov 改写成 mp4；其余格式回 error */
+async function prepareVideo(file) {
+  if (/^video\/(mp4|webm)$/i.test(file.type || '') || (!file.type && /\.(mp4|webm)$/i.test(file.name || '')))
+    return { file, hevc: false }
+  const head = new Uint8Array(await file.slice(0, 64).arrayBuffer())
+  if (!patchFtypBrand(head)) return { error: true }
+  const name = (file.name || 'video').replace(/\.[^.]+$/, '') + '.mp4'
+  return { file: new File([head, file.slice(64)], name, { type: 'video/mp4' }), hevc: await detectHevc(file) }
+}
+/** 抽视频第一帧当封面帧（最长边压到 1280 省体积）：失败 / 超时 resolve(null)，卡片退化成无封面 */
+function grabVideoPoster(file) {
+  return new Promise((resolve) => {
+    let settled = false
+    let url = ''
+    const finish = (shot) => {
+      if (settled) return
+      settled = true
+      try {
+        URL.revokeObjectURL(url)
+      } catch (e) {
+        /* 忽略 */
+      }
+      resolve(shot)
+    }
+    try {
+      url = URL.createObjectURL(file)
+    } catch (e) {
+      return finish(null)
+    }
+    const v = document.createElement('video')
+    v.preload = 'auto'
+    v.muted = true
+    v.setAttribute('playsinline', '')
+    v.addEventListener('loadeddata', () => {
+      try {
+        const sw = v.videoWidth || 0
+        const sh = v.videoHeight || 0
+        if (!sw || !sh) return finish(null)
+        const scale = Math.min(1, 1280 / Math.max(sw, sh))
+        const cv = document.createElement('canvas')
+        cv.width = Math.max(1, Math.round(sw * scale))
+        cv.height = Math.max(1, Math.round(sh * scale))
+        cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height)
+        cv.toBlob((blob) => finish(blob ? { blob, w: sw, h: sh } : null), 'image/jpeg', 0.82)
+      } catch (e) {
+        finish(null)
+      }
+    })
+    v.addEventListener('error', () => finish(null))
+    setTimeout(() => finish(null), 10000)
+    v.src = url
+  })
+}
+
+/** 列表行里的视频缩略（与图片缩略同尺寸，播放器控件不出现） */
+function videoThumbHtml(v) {
+  const poster = v.poster ? ` poster="${esc(v.poster)}"` : ''
+  return `<video src="${esc(v.url)}"${poster} muted playsinline preload="metadata"></video>`
+}
 
 function uploadFile(file, onProgress) {
   return new Promise((resolve, reject) => {

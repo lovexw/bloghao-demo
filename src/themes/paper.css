@@ -154,7 +154,7 @@ img { max-width: 100%; height: auto; }
 .cmt-count { color: var(--pp-sub); font-weight: 400; font-size: 14px; letter-spacing: 0; }
 .cmt-list { list-style: none; }
 .cmt-item { padding: 14px 16px; background: var(--pp-card); border: 1px solid var(--pp-line); border-radius: 6px; margin-bottom: 12px; }
-.cmt-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.cmt-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .cmt-name { font-size: 14px; color: var(--pp-accent); }
 
 .cmt-avatar { width: 22px; height: 22px; flex: none; align-self: center; border-radius: 50%; background: var(--pp-accent); color: #fff; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; }
@@ -222,6 +222,25 @@ img { max-width: 100%; height: auto; }
 .wb-imgs-2 img { aspect-ratio: 1/1; }
 .wb-imgs-3 { grid-template-columns: repeat(3, 1fr); }
 .wb-imgs-3 img { aspect-ratio: 1/1; }
+/* ---------- 微博视频（B19）：卡片播放器 + 发布器里的视频占位格 ---------- */
+.wb-video { position: relative; margin-top: 12px; border-radius: 4px; overflow: hidden; background: #000; }
+.wb-video video { display: block; width: 100%; height: auto; max-height: 68vh; }
+/* 竖屏视频居中限高，不撑出一整屏黑边 */
+.wb-video.is-portrait video { width: auto; max-width: 100%; height: 68vh; margin: 0 auto; }
+/* 无封面帧时叠一个 ▶ 角标（播放中由 site.js 挂 is-playing 收起） */
+.wb-video-badge { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.wb-video-badge::before { content: ''; width: 54px; height: 54px; border-radius: 50%; background: rgba(0, 0, 0, 0.42); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85); }
+.wb-video-badge::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-38%, -50%); border-style: solid; border-width: 9px 0 9px 15px; border-color: transparent transparent transparent rgba(255, 255, 255, 0.95); }
+.wb-video.is-playing .wb-video-badge { display: none; }
+/* 发布器里的视频格：比图片格宽，放预览帧与进度（上传中按钮文字同步百分比） */
+.wb-composer-tile--video { width: 132px; }
+.wb-composer-tile--video video { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+@media (max-width: 480px) {
+  .wb-video { margin-top: 10px; }
+  .wb-video video { max-height: 60vh; }
+  .wb-video.is-portrait video { height: 60vh; }
+  .wb-composer-tile--video { width: 108px; }
+}
 .wb-empty { text-align: center; color: var(--pp-sub); padding: 64px 0; font-size: 15px; letter-spacing: 0.1em; }
 .wb-pager { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 26px 0 0; }
 .wb-pager-btn {
@@ -278,6 +297,11 @@ img { max-width: 100%; height: auto; }
   padding: 0; margin-left: auto; letter-spacing: 0.04em;
 }
 .wb-cmt-reply-btn:hover, .cmt-reply-btn:hover { color: var(--pp-accent); }
+.cmt-del-btn, .wb-cmt-del-btn {
+  font-size: 12px; color: var(--pp-sub); background: none; border: none; cursor: pointer;
+  padding: 0 0 0 10px; white-space: nowrap;
+}
+.cmt-del-btn:hover, .wb-cmt-del-btn:hover { color: #c0392b; }
 .wb-cmt-reply-cancel, .cmt-reply-cancel {
   font-size: 12px; color: var(--pp-accent); background: none; border: none; cursor: pointer;
   padding: 0 0 0 6px; text-decoration: underline;
