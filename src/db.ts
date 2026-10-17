@@ -32,6 +32,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // 主题外观变量（B9 · 内测）：扁平 JSON（角色键 → 色值 + font/fontSize），渲染期按当前主题
   // 映射回主题自己的 CSS 变量输出覆盖样式，空串 = 未配置，机制见 src/appearance.ts
   appearance: '',
+  // 皮肤包自定义 CSS（B8，机制 src/skinpack.ts）：样式安检门净化后进 <style data-custom-css>，
+  // 空串 = 未配置；皮肤包应用 = appearance + customCss 两键一起写，无独立存储
+  customCss: '',
   // 页脚「站点足迹」统计 JSON（{posts,chars,since}）：每晚 cron 刷新 + 冷启动首次播种
   // （refreshFootStats），前台页脚名片读这里——展示口径滞后一夜可接受，不值得每次渲染都聚合
   siteFoot: '',
@@ -40,6 +43,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   footerText: '由 博客号 驱动 · 住在 Cloudflare 上',
   allowComments: '1',
   moderateComments: '0',
+  // 评论 IP 属地展示开关（src/ipregion.ts）：采集无条件（写库定格 request.cf 快照），
+  // 此开关只管前台展示——关闭时连公开出参都不带；开启前的旧评论无属地，不追溯回填
+  showCommentRegion: '0',
   postsPerPage: '10',
   about: '<p>在这里写下关于你的故事。</p>',
   faviconUrl: '',
@@ -70,6 +76,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   pluginsDisabled: 'douban-media',
   // 服务端插件停用名单（后台「插件」页；逗号分隔的插件 id，空 = 全部启用，见 src/hooks.ts）
   serverPluginsDisabled: '',
+  // 服务端插件配置（统一通道）：JSON { 插件id: { 字段键: 值 } }，按 hooks.ts 各插件
+  // configFields 渲染表单，PUT 过 cleanServerPluginConfig 净化校验——插件要配置不必塞专属键
+  serverPluginConfig: '',
   // 服务端插件配置：发布同步 TG 频道的频道 ID / 评论 Webhook 地址 / 页脚自定义 HTML（src/hooks.ts）
   tgChannelChatId: '',
   commentWebhookUrl: '',
@@ -105,7 +114,25 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // 英文版最近一次异常的错误摘要与发生时间（后台横幅展示，仅记录，渲染层不读）
   editionEnError: '',
   editionEnAt: '',
+  // 新手引导记账位（后台概览页清单卡）：仅 /api/auth/setup 首装成功时播种 '1'（api.ts），
+  // 老站没有此键 = 永不显示引导卡；'0' = 已完成/已跳过，永久消失。onboardingManual 是
+  // 「打开使用手册」的点击记账。两键都进 BOOL_SETTINGS 归一化，后台设置页保存全部不含它们
+  onboarding: '',
+  onboardingManual: '',
 }
+
+/** 敏感设置键：GET / PUT 响应一律打码（api.ts），整站包导出整体跳过（sitebundle.ts）。
+ *  唯一来源就在这里——新增敏感键只改这张表，别在别处再抄一份（曾因清单分叉漏打码）。
+ *  明文只在生成时返回一次；打码占位符提交 = 保留原值（同 SECRET_SETTINGS 口径） */
+export const SECRET_SETTINGS = [
+  'externalToken',
+  'telegramBotToken',
+  'telegramWebhookSecret',
+  'bufferAccessToken',
+  'plazaToken',
+  'commentWebhookUrl',
+  'turnstileSecret',
+]
 
 // settings 读取的共享快照层（Cache API）：生产 Workers 上 caches.default 是 colo 级共享——
 // 跨 isolate 同读一份快照，热读省掉每次请求的 D1 查询；写路径 invalidateSharedSettings
@@ -116,7 +143,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
 // refreshFootStats / ensureSchema 已内置，散落 db.ts 之外的裸写点（setupLock /
 // recordEditionFailure / demo 播种）各自负责——见 AGENTS「SQL / 输入」防线。
 const SETTINGS_SHARED_URL = 'https://xwblog-internal.invalid/__settings-snapshot'
-const SETTINGS_SHARED_TTL_S = 300
+// 60s（2026-10-15 审计 F1 止血）：快照键无实例维度，跨部署串设置的暴露窗口随 TTL 走——
+// 压到 1 分钟热读收益基本不损（一分钟内同 isolate/同 colo 仍免 D1），窗口缩到原来的 1/5。
+// 键带实例维度的完整修复需 host 穿过 getSettings/invalidateSharedSettings 调用链，见审计报告
+const SETTINGS_SHARED_TTL_S = 60
 const settingsInflight = new WeakMap<object, Promise<SettingsMap>>()
 
 function sharedCache(): Cache | null {
@@ -267,6 +297,8 @@ export async function listPosts(db: D1Database, opts: ListPostsOptions = {}): Pr
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
   const recency = 'COALESCE(published_at, created_at) DESC'
   // 随机排序用 (id+seed) 乘法散列：同一 seed 下全站顺序固定，翻页不重洗；换 seed 即换一组
+  // sort=comments 的相关子查询 INDEXED BY 是防读放大关键：规划器误选 idx_comments_status 时
+  // 逐篇全表扫评论，生产实测单次渲染 50 万行读取（tests/feed-index.test.ts 守卫）
   const orderSql =
     opts.status === 'draft'
       ? 'ORDER BY updated_at DESC'
@@ -275,7 +307,7 @@ export async function listPosts(db: D1Database, opts: ListPostsOptions = {}): Pr
         : opts.sort === 'likes'
           ? `ORDER BY likes DESC, ${recency}`
           : opts.sort === 'comments'
-            ? `ORDER BY (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = posts.id AND cm.status = 'approved') DESC, ${recency}`
+            ? `ORDER BY (SELECT COUNT(*) FROM comments cm INDEXED BY idx_comments_post WHERE cm.post_id = posts.id AND cm.status = 'approved') DESC, ${recency}`
             : opts.sort === 'random'
               ? `ORDER BY ((posts.id + ${clampInt(opts.seed, 1, 999999999, 1)}) * 2654435761) % 4294967296 ASC, posts.id ASC`
               : `ORDER BY pinned DESC, ${recency}`
@@ -865,12 +897,14 @@ export async function getWeiboById(db: D1Database, id: number): Promise<WeiboRow
   return db.prepare('SELECT * FROM weibo WHERE id = ? AND deleted_at IS NULL').bind(id).first<WeiboRow>()
 }
 
-/** 批量取一组微博的已审核评论数：{weiboId: count} */
+/** 批量取一组微博的已审核评论数：{weiboId: count}。
+ *  INDEXED BY 是硬约束（生产实测 2026-10-15）：不带它时规划器误选 idx_comments_status，
+ *  每次全表扫全部已审评论；强制走 weibo_id 索引后十次精准 seek。索引由 ensureSchema 兜底建 */
 export async function weiboCommentCountMap(db: D1Database, weiboIds: number[]): Promise<Map<number, number>> {
   if (!weiboIds.length) return new Map()
   const ph = weiboIds.map(() => '?').join(',')
   const { results } = await db
-    .prepare(`SELECT weibo_id, COUNT(*) AS n FROM comments WHERE weibo_id IN (${ph}) AND status = 'approved' GROUP BY weibo_id`)
+    .prepare(`SELECT weibo_id, COUNT(*) AS n FROM comments INDEXED BY idx_comments_weibo WHERE weibo_id IN (${ph}) AND status = 'approved' GROUP BY weibo_id`)
     .bind(...weiboIds)
     .all<{ weibo_id: number; n: number }>()
   const m = new Map<number, number>()
@@ -878,12 +912,13 @@ export async function weiboCommentCountMap(db: D1Database, weiboIds: number[]): 
   return m
 }
 
-/** 批量取一组文章的已审核评论数：{postId: count}（列表页一次带全，替代逐篇 COUNT 的 N+1） */
+/** 批量取一组文章的已审核评论数：{postId: count}（列表页一次带全，替代逐篇 COUNT 的 N+1）。
+ *  INDEXED BY 同 weiboCommentCountMap：防规划器误选 idx_comments_status 全表扫 */
 export async function postCommentCountMap(db: D1Database, postIds: number[]): Promise<Map<number, number>> {
   if (!postIds.length) return new Map()
   const ph = postIds.map(() => '?').join(',')
   const { results } = await db
-    .prepare(`SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN (${ph}) AND status = 'approved' GROUP BY post_id`)
+    .prepare(`SELECT post_id, COUNT(*) AS n FROM comments INDEXED BY idx_comments_post WHERE post_id IN (${ph}) AND status = 'approved' GROUP BY post_id`)
     .bind(...postIds)
     .all<{ post_id: number; n: number }>()
   const m = new Map<number, number>()
@@ -942,6 +977,8 @@ const SCHEMA_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'posts', column: 'min_tier', ddl: "ALTER TABLE posts ADD COLUMN min_tier TEXT NOT NULL DEFAULT 'all'" },
   // 文章访问密码（src/protect.ts）：salt:hash（PBKDF2），空 = 未加密；解锁 Cookie 的 HMAC key 就用它
   { table: 'posts', column: 'password_hash', ddl: "ALTER TABLE posts ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''" },
+  // AI 生成标注（编辑器「更多」自愿申报，<人工智能生成合成内容标识办法> 显式标识口径）：0/1，前台文章页 meta 行显示
+  { table: 'posts', column: 'ai_generated', ddl: 'ALTER TABLE posts ADD COLUMN ai_generated INTEGER NOT NULL DEFAULT 0' },
   // 会员昵称 30 天一次修改窗口（src/utils.ts nicknameCooldown）：NULL = 从未改过，首次修改不受限
   { table: 'members', column: 'display_name_changed_at', ddl: 'ALTER TABLE members ADD COLUMN display_name_changed_at INTEGER' },
   // 评论头像（C2）：绑定的 QQ 号，仅头像抓取记账位——任何公开出参不携带（头像走站内转存，见 members.avatar）
@@ -949,6 +986,9 @@ const SCHEMA_COLUMNS: { table: string; column: string; ddl: string }[] = [
   // 游客 QQ 头像（C2 扩展）：游客选填的 qq（仅抓取记账位，公开出参不携带）+ 服务端抓取转存的站内头像地址
   { table: 'comments', column: 'qq', ddl: "ALTER TABLE comments ADD COLUMN qq TEXT NOT NULL DEFAULT ''" },
   { table: 'comments', column: 'avatar', ddl: "ALTER TABLE comments ADD COLUMN avatar TEXT NOT NULL DEFAULT ''" },
+  // 评论 IP 属地（src/ipregion.ts）：写库定格 request.cf 快照（CN:Guangdong / US / HK），采集无条件，
+  // 展示走 settings.showCommentRegion 门控；开启前的旧评论与无 cf 的自托管形态为空串不展示
+  { table: 'comments', column: 'ip_region', ddl: "ALTER TABLE comments ADD COLUMN ip_region TEXT NOT NULL DEFAULT ''" },
   // 分类描述（B23）：归档页页头说明 + meta description；建表列体见 schema.sql
   { table: 'categories', column: 'description', ddl: "ALTER TABLE categories ADD COLUMN description TEXT NOT NULL DEFAULT ''" },
 ]
@@ -1088,6 +1128,9 @@ const SCHEMA_TRIGGERS = [
 // 导出供 tests/feed-index.test.ts 做双份登记镜像守卫
 export const SCHEMA_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_comments_weibo ON comments (weibo_id, created_at)',
+  // idx_comments_post 的 schema.sql 副本自 MoBlog v1.0 就有，但 INDEXED BY 是硬约束（索引不在场语句直接
+  // 报错）：这里兜底所有冷启动形态，老库若曾手工删过索引也能自愈（与 schema.sql 双份登记，tests/feed-index.test.ts 守卫）
+  'CREATE INDEX IF NOT EXISTS idx_comments_post ON comments (post_id, created_at)',
   // comments.member_id 与 posts.min_tier 是老库运行时补齐的列，索引只能在这里建（schema.sql 不能建，见该文件内说明）
   'CREATE INDEX IF NOT EXISTS idx_comments_member ON comments (member_id, created_at)',
   'CREATE INDEX IF NOT EXISTS idx_members_points ON members (points DESC)',
@@ -1116,7 +1159,9 @@ export const SCHEMA_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_posts_feed ON posts (status, pinned DESC, COALESCE(published_at, created_at) DESC, id DESC) WHERE deleted_at IS NULL',
 ]
 
-async function tableColumns(db: D1Database, table: string): Promise<Set<string>> {
+/** 表列清单（PRAGMA table_info）：ensureSchema 迁移与整站包版本比对共用。
+ *  调用方只传 BUNDLE_TABLES / SCHEMA_COLUMNS 里的固定表名（非用户输入），无注入面 */
+export async function tableColumns(db: D1Database, table: string): Promise<Set<string>> {
   const { results } = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>()
   return new Set((results ?? []).map((r) => r.name))
 }
@@ -1231,7 +1276,7 @@ export async function countUsers(db: D1Database): Promise<number> {
 
 export async function seedWelcomePost(db: D1Database, authorId: number): Promise<void> {
   const now = Date.now()
-  const content = `<p>你好呀，这是你博客号的第一篇文章 👋</p><p>微信有<strong>公众号</strong>，你有<strong>博客号</strong>——不用申请、不用排队，注册账号的那一刻它就归你了，而且完全住在 <strong>Cloudflare</strong> 上：网页由 Workers 渲染，文字存进 D1，图片传到 R2，全世界的访客都很快，每月免费额度足够你写很多年。</p><h2>写作，就要轻松</h2><p>打开 <a href="/admin/">后台</a>，像写公众号一样写：标题、正文、封面、标签都在一屏里；截图直接 <strong>Ctrl/⌘ + V</strong> 粘贴进正文，图片自动传到你的 R2 图床。</p><blockquote>博客号，博客好。写作最好的状态：像发动态一样轻，像写文章一样认真。</blockquote><h3>试试这些</h3><ul><li>粘贴一张截图，体验自动上传</li><li>点右上角「体检」，检查排版是否符合微信排版规范</li><li>在「设置」里换一套主题：微信公众号风 / 纸墨 / 极简 / 夜航 / 手账</li></ul><p>现在，删掉这篇文章，写下属于你的第一篇吧。</p>`
+  const content = `<p>你好呀，这是你博客号的第一篇文章 👋</p><p>微信有<strong>公众号</strong>，你有<strong>博客号</strong>——不用申请、不用排队，注册账号的那一刻它就归你了，而且完全住在 <strong>Cloudflare</strong> 上：网页由 Workers 渲染，文字存进 D1，图片传到 R2，全世界的访客都很快，每月免费额度足够你写很多年。</p><h2>写作，就要轻松</h2><p>打开 <a href="/admin/">后台</a>，像写公众号一样写：标题、正文、封面、标签都在一屏里；截图直接 <strong>Ctrl/⌘ + V</strong> 粘贴进正文，图片自动传到你的 R2 图床。</p><blockquote>博客号，博客好。写作最好的状态：像发动态一样轻，像写文章一样认真。</blockquote><h3>试试这些</h3><ul><li>粘贴一张截图，体验自动上传</li><li>点右上角「体检」，检查排版是否符合微信排版规范</li><li>在「设置」里换一套主题：微信公众号风 / 纸墨 / 极简 / 夜航 / 手账 / 比特币 / 小红书</li></ul><p>现在，删掉这篇文章，写下属于你的第一篇吧。</p>`
   // OR IGNORE：slug 已存在（例如线上已手动播种过）时静默跳过，保证首次创建管理员永不失败
   await db
     .prepare(

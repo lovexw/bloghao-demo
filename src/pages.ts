@@ -66,6 +66,7 @@ import type { Env, PostRow, SessionUser, SettingsMap } from './types'
 import { packMatrix, qrMatrix } from './qrcode'
 import { clampInt, esc, excerpt, isDemo, readingMinutes, teaserHtml } from './utils'
 import { analyticsOrigin, breadcrumbJsonLd, isSpeculativeRequest } from './seo'
+import { needsFontSrc } from './skinpack'
 
 type C = Context<{ Bindings: Env; Variables: { user: SessionUser | null } }>
 
@@ -91,7 +92,7 @@ const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com'
  *     浏览器按未知源忽略、内联脚本照旧被拦——只开这一扇窗，不放宽任何其它内联脚本；
  *  ③ 会员页 Turnstile：挑战脚本 + 挑战 iframe（frame-src）。
  */
-function buildCsp(opts: { analyticsOrigin?: string | null; turnstile?: boolean } = {}): string {
+function buildCsp(opts: { analyticsOrigin?: string | null; turnstile?: boolean; fontSrc?: boolean } = {}): string {
   const script = ["'self'", "'inline-speculation-rules'"]
   if (opts.analyticsOrigin) script.push(opts.analyticsOrigin)
   if (opts.turnstile) script.push(TURNSTILE_ORIGIN)
@@ -107,6 +108,8 @@ function buildCsp(opts: { analyticsOrigin?: string | null; turnstile?: boolean }
     "object-src 'none'",
   ]
   if (opts.turnstile) parts.push(`frame-src 'self' ${TURNSTILE_ORIGIN}`)
+  // 皮肤包自定义 CSS（src/skinpack.ts）需要外链字体时才放宽，无 CSS 的站点 CSP 字节级不变
+  if (opts.fontSrc) parts.push("font-src 'self' https: data:")
   if (opts.analyticsOrigin) parts.push(`connect-src 'self' ${opts.analyticsOrigin}`)
   return parts.join('; ')
 }
@@ -114,7 +117,7 @@ function buildCsp(opts: { analyticsOrigin?: string | null; turnstile?: boolean }
 /** 公开页通用响应头。settings 可选：传入时按站点配置放宽 CSP（统计脚本域）；各公开页渲染函数都在
  *  读到 settings 之后再调用它——别把调用挪回 settings 之前，否则统计脚本会被 CSP 拦掉 */
 function baseHeaders(c: C, settings?: SettingsMap) {
-  c.header('Content-Security-Policy', buildCsp({ analyticsOrigin: analyticsOrigin(settings?.analyticsScript) }))
+  c.header('Content-Security-Policy', buildCsp({ analyticsOrigin: analyticsOrigin(settings?.analyticsScript), fontSrc: needsFontSrc(settings) }))
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('X-Frame-Options', 'SAMEORIGIN')
@@ -151,7 +154,10 @@ async function navTags(c: C): Promise<{ name: string; count: number }[]> {
 }
 
 async function commentCount(c: C, postId: number): Promise<number> {
-  const r = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE post_id = ? AND status = 'approved'")
+  // INDEXED BY 防规划器误选 idx_comments_status 全表扫（同 db.ts postCommentCountMap，生产实测 2400+ 行 → 2 行）
+  const r = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM comments INDEXED BY idx_comments_post WHERE post_id = ? AND status = 'approved'"
+  )
     .bind(postId)
     .first<{ n: number }>()
   return r?.n ?? 0
@@ -228,7 +234,8 @@ async function renderList(
   baseHeaders(c, settings)
   const theme = getTheme(settings.theme)
   const url = new URL(c.req.url)
-  const tag = c.req.param('tag') || url.searchParams.get('tag') || undefined
+  // tag 与缓存键侧同口径 trim（2026-10-15 审计 C1：?tag= 带空白会把空结果投毒到干净键上）
+  const tag = c.req.param('tag') || url.searchParams.get('tag')?.trim() || undefined
   const mode = siteMode(settings)
   // 纯微博：打开首页就是微博时间线（文章数据不动，/post/ 直链仍可访问）；/tag/:tag 属博客概念照旧渲染
   if (opts.mode === 'home' && mode === 'weibo' && !tag) return renderWeibo(c, true)
@@ -575,6 +582,7 @@ export async function renderPost(c: C): Promise<Response> {
     // 作者评论的头像位用站点头像（与微博卡同源），游客/会员评论不适用
     adminAvatar: settings.avatarUrl || undefined,
     tip: settings.moderateComments === '1' && !user ? tr(en, '提交后审核通过即展示') : undefined,
+    showRegion: settings.showCommentRegion === '1',
     en,
   })
 
@@ -599,6 +607,8 @@ export async function renderPost(c: C): Promise<Response> {
       readingMinutes: readingMinutes(row.content),
       minTier,
       locked,
+      // AI 生成标注（编辑器自愿申报）：<人工智能生成合成内容标识办法> 显式标识口径，meta 行输出
+      aiGenerated: !!row.ai_generated,
     },
     category: categoryRow ? { name: categoryRow.name, slug: categoryRow.slug } : null,
     categories,
@@ -826,6 +836,7 @@ export async function renderGuestbook(c: C): Promise<Response> {
       memberName: !user && member ? (member.display_name || member.username || '').slice(0, 24) : undefined,
       adminAvatar: settings.avatarUrl || undefined,
       tip: settings.moderateComments === '1' && !user ? tr(en, '提交后审核通过即展示') : undefined,
+      showRegion: settings.showCommentRegion === '1',
       guestbook: true,
       // 页头已有「留言板」大标题，留言区标题换成「全部留言」避免重复
       title: tr(en, '全部留言'),
@@ -1010,7 +1021,7 @@ export async function renderMember(c: C): Promise<Response> {
   // 注册人机验证（Turnstile）：仅此页放行挑战脚本与 iframe，sitekey 经 <html data-turnstile>
   // 下发（page() 内按 path==='/member' 注入），site.js 据此懒挂载组件
   if (settings.turnstileSiteKey) {
-    c.header('Content-Security-Policy', buildCsp({ analyticsOrigin: analyticsOrigin(settings.analyticsScript), turnstile: true }))
+    c.header('Content-Security-Policy', buildCsp({ analyticsOrigin: analyticsOrigin(settings.analyticsScript), turnstile: true, fontSrc: needsFontSrc(settings) }))
   }
   const theme = getTheme(settings.theme)
   const en = isEn(settings)

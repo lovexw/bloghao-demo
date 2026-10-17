@@ -321,6 +321,82 @@ async function shellView(active, contentHTML) {
 }
 
 /* ---------------- 概览 ---------------- */
+// 新手引导卡（概览页清单卡）：仅首装显示——/api/auth/setup 播种 settings.onboarding='1'，
+// 老站无此键永不出现。完成状态每次进概览实时计算不落库：站名非默认 / 头像非空 /
+// stats 微博计数 / 手册点击（onboardingManual 记账）；「跳过」与「完成引导」都是
+// PUT { onboarding:'0' }，永久消失。设置页「保存全部」body 不含这两个键，引导态不会被整表提交重置
+const ONBOARD_GUIDE_URL = 'https://bloghao.com/docs/guide.html'
+
+async function onboardSetDone(msg) {
+  try {
+    const d = await api('/admin/settings', { method: 'PUT', body: { onboarding: '0' } })
+    state.settings = d.settings
+    toast(msg)
+    navigate()
+  } catch (e) {
+    toast(e.message || '操作失败，请重试', true)
+  }
+}
+
+function onboardCardHtml(s) {
+  const st = state.settings || {}
+  if (st.onboarding !== '1') return ''
+  // 改名判定含设置页「保存全部」的兜底值「博客号」：两者都算没起名
+  const nameDone = !!st.siteName && st.siteName !== '博客号 BlogHao' && st.siteName !== '博客号'
+  const avatarDone = !!st.avatarUrl
+  const weiboDone = ((s.db && s.db.weibo) || 0) > 0
+  const manualDone = st.onboardingManual === '1'
+  const doneCount = [nameDone, avatarDone, weiboDone, manualDone].filter(Boolean).length
+  const allDone = doneCount === 4
+  const rows = [
+    `<div class="onboard-row${nameDone ? ' is-done' : ''}">
+      <span class="onboard-mark">${nameDone ? '✅' : '1'}</span>
+      <div class="onboard-main">
+        ${nameDone
+          ? `<div class="onboard-title">站点名字「${esc(st.siteName)}」已就绪</div>`
+          : `<div class="onboard-title">给站点起个名字</div>
+            <div class="onboard-sub">现在还是默认名，前台、订阅、广场都靠它认人。</div>
+            <div class="onboard-inline"><input class="input" id="onboard-name" maxlength="40" placeholder="给你的博客起个名字" value="${esc(st.siteName || '')}"><button class="btn btn-primary btn-sm" data-act="onboard-name">保存</button></div>`}
+      </div>
+    </div>`,
+    `<div class="onboard-row${avatarDone ? ' is-done' : ''}">
+      <span class="onboard-mark">${avatarDone ? '✅' : '2'}</span>
+      <div class="onboard-main">
+        <div class="onboard-title">${avatarDone ? `站点头像已就绪 <img class="onboard-thumb" src="${esc(st.avatarUrl)}" alt="">` : '换上站点头像'}</div>
+        ${avatarDone ? '' : '<div class="onboard-sub">出现在首页刊头和你的每条评论旁，发布时自动同步到广场。</div>'}
+      </div>
+      ${avatarDone ? '' : '<button class="btn btn-ghost btn-sm" data-act="onboard-avatar">上传头像</button>'}
+    </div>`,
+    `<div class="onboard-row${weiboDone ? ' is-done' : ''}">
+      <span class="onboard-mark">${weiboDone ? '✅' : '3'}</span>
+      <div class="onboard-main">
+        <div class="onboard-title">${weiboDone ? '已发过微博，保持记录 ✍️' : '发一条微博试试'}</div>
+        ${weiboDone ? '' : '<div class="onboard-sub">博客号不止长文，随手记的短内容更适合日常。</div>'}
+      </div>
+      ${weiboDone ? '' : '<a class="btn btn-ghost btn-sm" href="#/weibo">去发微博 →</a>'}
+    </div>`,
+    `<div class="onboard-row${manualDone ? ' is-done' : ''}">
+      <span class="onboard-mark">${manualDone ? '✅' : '4'}</span>
+      <div class="onboard-main">
+        <div class="onboard-title">${manualDone ? '使用手册已打开' : '看一眼使用手册'}</div>
+        ${manualDone ? '' : '<div class="onboard-sub">后台导览、写作流程、设置逐项说明，都在里面。</div>'}
+      </div>
+      ${manualDone ? '' : `<a class="btn btn-ghost btn-sm" href="${ONBOARD_GUIDE_URL}" target="_blank" rel="noopener" data-act="onboard-manual">打开手册 ↗</a>`}
+    </div>`,
+  ].join('')
+  return `<div class="panel onboard">
+    <div class="onboard-head">
+      <div>
+        <div class="onboard-hi">${allDone ? '🎉 全部就绪！' : '👋 欢迎使用博客号'}</div>
+        <div class="onboard-sub">${allDone ? '删掉那篇欢迎文章，写你自己的第一篇吧。' : '花一分钟做完这几步，让博客更像「你的」——做完或不想做，随时可跳过。'}</div>
+      </div>
+      ${allDone ? '<button class="btn btn-primary btn-sm" data-act="onboard-finish">完成引导</button>' : `<span class="chip chip-gray">已完成 ${doneCount}/4</span>`}
+    </div>
+    <div class="onboard-rows">${rows}</div>
+    <div class="onboard-foot"><button class="onboard-skip" data-act="onboard-skip" type="button">跳过引导，不再显示</button></div>
+  </div>`
+}
+
 async function viewHome() {
   let s
   try {
@@ -350,6 +426,7 @@ async function viewHome() {
       <div><div class="page-title">概览</div><div class="page-sub">小院今天的情况</div></div>
       <a class="btn btn-primary" href="#/editor/new">✍️ 写文章</a>
     </div>
+    ${onboardCardHtml(s)}
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">已发布文章</div><div class="stat-value">${s.posts}</div></div>
       <div class="stat-card"><div class="stat-label">总阅读</div><div class="stat-value">${s.views}</div></div>
@@ -391,6 +468,55 @@ async function viewHome() {
       purgeBtn.disabled = false
     }
   })
+  // 新手引导卡事件：改名/头像写完 navigate() 重渲染重算；手册是 target=_blank 原生开新页
+  // （浏览器行为，无弹窗拦截问题），点击后异步记账；跳过/完成共用 onboardSetDone
+  const obName = $app.querySelector('[data-act=onboard-name]')
+  if (obName) obName.addEventListener('click', async () => {
+    const input = document.getElementById('onboard-name')
+    const v = input ? input.value.trim() : ''
+    if (!v) return toast('先给站点起个名字吧', true)
+    obName.disabled = true
+    try {
+      const d = await api('/admin/settings', { method: 'PUT', body: { siteName: v } })
+      state.settings = d.settings
+      toast('站点名字已保存 ✅')
+      navigate()
+    } catch (e) {
+      toast(e.message || '保存失败，请重试', true)
+      obName.disabled = false
+    }
+  })
+  const obAvatar = $app.querySelector('[data-act=onboard-avatar]')
+  if (obAvatar) obAvatar.addEventListener('click', () => {
+    pickFiles('image/jpeg,image/png,image/webp,image/gif', false, async (files) => {
+      if (!files[0]) return
+      obAvatar.disabled = true
+      try {
+        const d = await uploadFile(await compressImage(files[0]))
+        const r = await api('/admin/settings', { method: 'PUT', body: { avatarUrl: d.url } })
+        state.settings = r.settings
+        toast('站点头像已更新 ✅')
+        navigate()
+      } catch (e) {
+        toast(e.message || '上传失败，请重试', true)
+        obAvatar.disabled = false
+      }
+    })
+  })
+  const obManual = $app.querySelector('[data-act=onboard-manual]')
+  if (obManual) obManual.addEventListener('click', async () => {
+    if (!state.settings || state.settings.onboardingManual === '1') return
+    try {
+      const d = await api('/admin/settings', { method: 'PUT', body: { onboardingManual: '1' } })
+      state.settings = d.settings
+    } catch { /* 手册记账失败不打扰用户，下次点击再记 */ }
+  })
+  const obSkip = $app.querySelector('[data-act=onboard-skip]')
+  if (obSkip) obSkip.addEventListener('click', async () => {
+    if (await confirmBox('确定跳过新手引导吗？跳过后不再显示。')) await onboardSetDone('已跳过新手引导')
+  })
+  const obFinish = $app.querySelector('[data-act=onboard-finish]')
+  if (obFinish) obFinish.addEventListener('click', () => onboardSetDone('引导完成，开始写作吧 🎉'))
 }
 
 /* ---------------- 访客统计（#/stats，数据来自 /api/admin/visits，见 src/stats.ts） ---------------- */
@@ -1936,6 +2062,7 @@ async function viewComments() {
           ${Number(cm.is_admin) ? '<span class="chip chip-green">作者</span>' : ''}
           ${cm.status === 'pending' ? '<span class="chip chip-warn">待审核</span>' : '<span class="chip chip-green">已展示</span>'}
           <span class="chip chip-gray">${typeChip}</span>
+          ${cm.ip_region ? `<span class="chip chip-gray">${esc(cm.ip_region)}</span>` : ''}
           ${target}
           ${cm.parent_nickname ? `<span class="chip chip-gray">回复 @${esc(cm.parent_nickname)}</span>` : ''}
           <span style="color:var(--sub);font-size:12px;">${fmtDateTime(cm.created_at)}</span>
@@ -2412,6 +2539,35 @@ async function fetchCatalog() {
   return null
 }
 
+/* 外观实时预览（B9 v2）：按主题 meta 的变量名生成一张假文章卡，
+ * 覆盖变量声明在 #ap-preview 盒上（作用域干净），子元素用 var(..., 默认值) 引用——
+ * 主题不支持的角色退 --apv-none 空变量名落到兜底色，与 appearanceHeadStyle 的按主题过滤同语义 */
+function apPreviewHtml(ap) {
+  const ref = (key, fb) => {
+    const r = ap.roles.find((x) => x.key === key)
+    return r ? `var(${r.vars[0]}, ${r.default})` : `var(--apv-none, ${fb})`
+  }
+  const accent = ref('accent', '#b23a29')
+  const link = ap.roles.find((x) => x.key === 'link') ? ref('link', '#576b95') : accent
+  const cardBg = ref('card', '#ffffff')
+  const line = ref('line', '#e5e0d8')
+  const rv = ap.radius || { var: '--apv-none', default: 10, lgFactor: 1.6 }
+  return `
+  <div class="ap-preview-wrap">
+    <style id="ap-preview-style"></style>
+    <div class="ap-preview" id="ap-preview">
+      <div class="apv-card" style="background:${cardBg};border:1px solid ${line};border-radius:calc(var(${rv.var}, ${rv.default}px) * ${rv.lgFactor})">
+        <span class="apv-tag" style="color:${accent};background:color-mix(in srgb, ${accent} 10%, transparent)">随笔</span>
+        <h4 class="apv-title" style="color:${ref('ink', '#333333')}">把日子过成自己喜欢的样子</h4>
+        <p class="apv-text" style="color:${ref('ink', '#333333')}">这是一段正文示例文字，用来预览字体、字号与颜色搭配的实际观感——改动上面的任何一项都会立刻反映在这张卡片上。</p>
+        <div class="apv-meta" style="color:${ref('sub', '#999999')}">2026-10-16 · 阅读 128</div>
+        <a class="apv-link" style="color:${link}" href="javascript:void(0)">阅读全文 →</a>
+        <div class="apv-img" style="border-radius:var(${rv.var}, ${rv.default}px);background:color-mix(in srgb, ${accent} 14%, ${cardBg})"></div>
+      </div>
+    </div>
+  </div>`
+}
+
 async function viewAppearance() {
   const q = new URLSearchParams(location.hash.split('?')[1] || '')
   const tab = q.get('tab') === 'market' ? 'market' : 'mine'
@@ -2442,6 +2598,22 @@ async function viewAppearance() {
     })
     .join('') || '<div class="empty-box">市场目录暂时空着，更多皮肤敬请期待</div>'
 
+  // 皮肤包（B8）：市场目录内联数据，一键应用 = PUT appearance + customCss 两键，
+  // CSS 由服务端样式安检门（src/skinpack.ts）净化后才进页面
+  const skinCards =
+    (catalog?.skins || [])
+      .map((s) => {
+        const p = s.pack && typeof s.pack === 'object' ? s.pack : null
+        if (!p) return ''
+        const colors = Array.isArray(s.colors) ? s.colors.slice(0, 5) : []
+        return `<div class="theme-card skin-card" data-skin="${esc(s.id || '')}">
+      <div class="skin-swatches">${colors.map((c) => `<i style="background:${esc(String(c))}"></i>`).join('')}</div>
+      <div class="theme-meta"><div class="theme-name"><span>${esc(s.name || s.id || '未命名')}</span></div><div class="theme-desc">${esc(s.description || '')}</div></div>
+      <div class="skin-ops"><button class="btn btn-sm sk-apply" type="button" data-skin="${esc(s.id || '')}">应用皮肤包</button></div>
+    </div>`
+      })
+      .join('') || '<div class="empty-box">市场暂时没有皮肤包</div>'
+
   // 外观变量（B9 · 内测）：按当前皮肤的能力出表单——主题不支持的角色（如 minimal 无主色）不出现
   const curTheme = list.find((t) => t.id === state.settings.theme) || null
   const ap = curTheme && curTheme.appearance
@@ -2471,7 +2643,7 @@ async function viewAppearance() {
     <div class="panel" style="padding:20px;margin-top:16px;" id="ap-panel">
       <div class="form-section" style="margin-bottom:0;">
         <h3>外观变量 <span class="mk-badge">内测</span></h3>
-        <div class="sec-desc">不改代码微调当前皮肤「${esc(curTheme.name)}」的颜色、字体与正文字号，保存后全站即时生效、可随时恢复默认；圆角等更多变量在后续版本开放。只列出当前皮肤支持的项目，换皮肤后请回到这里重调</div>
+        <div class="sec-desc">不改代码微调当前皮肤「${esc(curTheme.name)}」的颜色、字体、正文字号与圆角，保存后全站即时生效、可随时恢复默认；只列出当前皮肤支持的项目，换皮肤后请回到这里重调</div>
         <div class="ap-grid">${apRows}</div>
         <div class="form-row">
           <div class="form-item"><label>正文字体</label>
@@ -2483,8 +2655,10 @@ async function viewAppearance() {
           </div>
           <div class="form-item"><label>自定义字体栈（逗号分隔，选「自定义」时生效）</label><input class="input" id="ap-font-custom" value="${esc(customFont)}" placeholder='"HarmonyOS Sans", sans-serif'></div>
           <div class="form-item"><label>正文字号 px（主题默认 ${ap.richSize}，留空跟随主题）</label><input class="input" type="number" id="ap-size" min="14" max="22" step="0.5" value="${typeof picks.fontSize === 'number' && picks.fontSize ? picks.fontSize : ''}"></div>
+          <div class="form-item"><label>圆角 px（主题默认 ${ap.radius ? ap.radius.default : '-'}，留空跟随主题；0 = 直角风格）</label><input class="input" type="number" id="ap-radius" min="0" max="24" step="1" value="${typeof picks.radius === 'number' ? picks.radius : ''}"></div>
         </div>
-        <div class="switch-sub" style="margin-bottom:12px;">取色器初始显示主题默认值；与默认相同的项保存后不会产生任何覆盖样式</div>
+        ${apPreviewHtml(ap)}
+        <div class="switch-sub" style="margin-bottom:12px;">取色器初始显示主题默认值；与默认相同的项保存后不会产生任何覆盖样式；预览即所见，点「保存外观」后全站生效</div>
         <div class="ap-ops">
           <button class="btn" id="btn-ap-save" type="button">保存外观</button>
           <button class="btn btn-ghost" id="btn-ap-reset" type="button">全部恢复默认</button>
@@ -2494,6 +2668,25 @@ async function viewAppearance() {
     </div>`
   }
 
+  // 皮肤包 & 自定义 CSS（B8）：customCss 过服务端样式安检门后进每页 <style data-custom-css>
+  const cssVal = typeof state.settings.customCss === 'string' ? state.settings.customCss : ''
+  const cssPanel = `
+    <div class="panel" style="padding:20px;margin-top:16px;" id="sk-panel">
+      <div class="form-section" style="margin-bottom:0;">
+        <h3>皮肤包与自定义 CSS</h3>
+        <div class="sec-desc">市场里的一键配色就是皮肤包——粘贴包 JSON 也能导入；自定义 CSS 追加在主题样式之后全站生效（服务端净化：@import、脚本类内容、外链非 https 资源不允许，url() 只收 https 与站内地址）</div>
+        <div class="form-item"><label>导入皮肤包（粘贴包 JSON）</label>
+          <textarea class="input" id="sk-pack" rows="3" placeholder='{"name":"苔原","appearance":{"accent":"#3d7a5f","radius":12},"css":""}'></textarea></div>
+        <div class="form-item"><label>自定义 CSS（留空 = 不启用；皮肤包自带的 CSS 会填到这里）</label>
+          <textarea class="input" id="sk-css" rows="6" placeholder='.rich img { border-radius: 8px; }'>${esc(cssVal)}</textarea></div>
+        <div class="ap-ops">
+          <button class="btn" id="btn-sk-apply" type="button">应用皮肤包</button>
+          <button class="btn" id="btn-sk-css" type="button">保存自定义 CSS</button>
+          <button class="btn btn-ghost" id="btn-sk-clear" type="button">清空自定义 CSS</button>
+        </div>
+      </div>
+    </div>`
+
   await shellView(
     'appearance',
     `<div class="page-head"><div><div class="page-title">皮肤</div><div class="page-sub">给博客换一身好看的衣服，选中即刻生效</div></div>
@@ -2502,9 +2695,36 @@ async function viewAppearance() {
       <a class="tab${tab === 'mine' ? ' is-active' : ''}" href="#/appearance">我的皮肤</a>
       <a class="tab${tab === 'market' ? ' is-active' : ''}" href="#/appearance?tab=market">皮肤市场</a>
     </div></div>
-    ${tab === 'mine' ? `<div class="panel" style="padding:20px;"><div class="settings-grid" id="theme-grid">${mine}</div></div>${apPanel}` : `<div class="panel" style="padding:20px;"><div class="settings-grid">${market}</div></div>`}`
+    ${tab === 'mine' ? `<div class="panel" style="padding:20px;"><div class="settings-grid" id="theme-grid">${mine}</div></div>${apPanel}${cssPanel}` : `<div class="panel" style="padding:20px;"><div class="settings-grid">${market}</div></div><div class="panel" style="padding:20px;margin-top:16px;"><h3 style="margin-bottom:12px;">皮肤包</h3><div class="settings-grid">${skinCards}</div></div>`}`
   )
 
+  // 皮肤包应用（市场卡与粘贴导入共用）：外观参数与自定义 CSS 一起写，二次确认防误覆盖
+  const applySkinPack = async (appearance, css, label) => {
+    const ok = await confirmBox(`应用皮肤包「${label}」将覆盖当前的外观变量与自定义 CSS，确定继续？`)
+    if (!ok) return
+    try {
+      const d = await api('/admin/settings', { method: 'PUT', body: { appearance, customCss: css } })
+      state.settings = d.settings
+      toast(`皮肤包「${label}」已应用，全站即时生效`)
+      navigate()
+    } catch (e) {
+      handleApiErr(e)
+    }
+  }
+  if (tab === 'market') {
+    $app.querySelectorAll('.sk-apply').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const s = (catalog?.skins || []).find((x) => (x.id || '') === btn.getAttribute('data-skin'))
+        const p = s && s.pack && typeof s.pack === 'object' ? s.pack : null
+        if (!p) return toast('皮肤包数据缺失', false)
+        const appearance =
+          p.appearance && typeof p.appearance === 'object' && !Array.isArray(p.appearance) ? JSON.stringify(p.appearance) : ''
+        if (!appearance) return toast('该皮肤包没有外观参数，无法应用', false)
+        applySkinPack(appearance, typeof p.css === 'string' ? p.css : '', (s.name || s.id || '未命名').toString())
+      })
+    )
+    return
+  }
   if (tab !== 'mine') return
   // 点击卡片立即启用：乐观高亮，保存失败回退并提示
   let applying = false
@@ -2531,6 +2751,38 @@ async function viewAppearance() {
   )
 
   if (!ap) return
+  // 实时预览：面板任一输入变化 → 重算覆盖变量投到假卡片（#ap-preview-style 由 apPreviewHtml 预置）
+  const apvStyle = document.getElementById('ap-preview-style')
+  if (apvStyle) {
+    const renderApPreview = () => {
+      const lines = []
+      const rootVars = []
+      document.querySelectorAll('#ap-panel .ap-color').forEach((inp) => {
+        const key = inp.getAttribute('data-role')
+        const role = ap.roles.find((x) => x.key === key)
+        const v = (inp.value || '').toLowerCase()
+        if (role && v && v !== role.default) rootVars.push(`${role.vars[0]}:${v}`)
+      })
+      const rad = parseFloat(document.getElementById('ap-radius').value)
+      if (ap.radius && Number.isFinite(rad)) {
+        const r = Math.round(Math.min(24, Math.max(0, rad)))
+        if (r !== ap.radius.default) rootVars.push(`${ap.radius.var}:${r}px`)
+      }
+      if (rootVars.length) lines.push(`#ap-preview{${rootVars.join(';')}}`)
+      const sel = document.getElementById('ap-font-select')
+      const custom = (document.getElementById('ap-font-custom').value || '').trim()
+      const preset = sel && sel.value ? ap.fontPresets.find((p) => p.id === sel.value) : null
+      const stack = sel && sel.value === 'custom' ? custom : preset ? preset.stack : ''
+      if (stack) lines.push(`#ap-preview{font-family:${stack}}`)
+      const size = parseFloat(document.getElementById('ap-size').value)
+      lines.push(`#ap-preview .apv-text{font-size:${Number.isFinite(size) && size ? size : ap.richSize}px}`)
+      apvStyle.textContent = lines.join('')
+    }
+    document.querySelectorAll('#ap-panel .ap-color, #ap-size, #ap-radius, #ap-font-custom').forEach((el) => el.addEventListener('input', renderApPreview))
+    const fontSel = document.getElementById('ap-font-select')
+    if (fontSel) fontSel.addEventListener('change', renderApPreview)
+    renderApPreview()
+  }
   const saveAppearance = async (payload, okMsg) => {
     const saveBtn = document.getElementById('btn-ap-save')
     const resetBtn = document.getElementById('btn-ap-reset')
@@ -2560,10 +2812,61 @@ async function viewAppearance() {
       obj.font = sel.value === 'custom' ? custom : sel.value
       const size = parseFloat(document.getElementById('ap-size').value)
       obj.fontSize = Number.isFinite(size) ? size : 0
+      // 圆角留空 = 省键清除（0 是合法的直角值，与 fontSize 的 0=清除语义不同）
+      const radRaw = (document.getElementById('ap-radius').value || '').trim()
+      if (radRaw !== '') {
+        const r = parseFloat(radRaw)
+        if (Number.isFinite(r)) obj.radius = Math.round(Math.min(24, Math.max(0, r)))
+      }
       saveAppearance(JSON.stringify(obj), '外观已保存，全站即时生效')
     })
   const btnReset = document.getElementById('btn-ap-reset')
   if (btnReset) btnReset.addEventListener('click', () => saveAppearance('', '已恢复主题默认外观'))
+
+  // 自定义 CSS 保存 / 清空（清空同步清掉输入框，所见即所存）
+  const saveCustomCss = async (css, okMsg) => {
+    const btn = document.getElementById('btn-sk-css')
+    const clearBtn = document.getElementById('btn-sk-clear')
+    if (btn) btn.disabled = true
+    if (clearBtn) clearBtn.disabled = true
+    try {
+      const d = await api('/admin/settings', { method: 'PUT', body: { customCss: css } })
+      state.settings = d.settings
+      toast(okMsg)
+    } catch (e) {
+      handleApiErr(e)
+    } finally {
+      if (btn) btn.disabled = false
+      if (clearBtn) clearBtn.disabled = false
+    }
+  }
+  const btnCss = document.getElementById('btn-sk-css')
+  if (btnCss)
+    btnCss.addEventListener('click', () => saveCustomCss(document.getElementById('sk-css').value, '自定义 CSS 已保存，全站即时生效'))
+  const btnClearCss = document.getElementById('btn-sk-clear')
+  if (btnClearCss)
+    btnClearCss.addEventListener('click', () => {
+      document.getElementById('sk-css').value = ''
+      saveCustomCss('', '自定义 CSS 已清空')
+    })
+  // 粘贴导入皮肤包：与市场应用同路（服务端逐键净化，非法 400）
+  const btnApply = document.getElementById('btn-sk-apply')
+  if (btnApply)
+    btnApply.addEventListener('click', () => {
+      let pack = null
+      try {
+        pack = JSON.parse(document.getElementById('sk-pack').value)
+      } catch {
+        return toast('皮肤包不是合法的 JSON', false)
+      }
+      if (!pack || typeof pack !== 'object' || Array.isArray(pack)) return toast('皮肤包格式不正确', false)
+      const appearance =
+        pack.appearance && typeof pack.appearance === 'object' && !Array.isArray(pack.appearance)
+          ? JSON.stringify(pack.appearance)
+          : ''
+      if (!appearance) return toast('皮肤包缺少外观参数（appearance）', false)
+      applySkinPack(appearance, typeof pack.css === 'string' ? pack.css : '', String(pack.name || '导入的皮肤包'))
+    })
 }
 
 /* ---------------- 插件 ---------------- */
@@ -2616,6 +2919,16 @@ async function viewPlugins() {
   const market = (catalog?.plugins || [])
     .map((p) => {
       const has = installed.some((x) => x.id === p.id)
+      // 市场条目带 src（插件文件直链）= 可远程安装；否则只是跳转展示卡
+      if (p.src)
+        return `<div class="pl-row">
+      <span class="pl-ico">${esc((p.name || p.id).charAt(0).toUpperCase())}</span>
+      <div class="pl-main">
+        <div class="pl-name">${esc(p.name || p.id)}</div>
+        <div class="pl-desc">${esc(p.description || '查看介绍与安装说明')}</div>
+      </div>
+      <button class="btn btn-sm" data-mkt-install="${esc(p.id)}" data-src="${esc(safeHttpUrl(p.src))}">安装</button>
+    </div>`
       return `<a class="pl-row mk-row" href="${esc(safeHttpUrl(p.link))}" target="_blank" rel="noopener">
       <span class="pl-ico">${esc((p.name || p.id).charAt(0).toUpperCase())}</span>
       <div class="pl-main">
@@ -2627,17 +2940,55 @@ async function viewPlugins() {
     })
     .join('') || '<div class="empty-box">市场目录暂时空着，更多插件敬请期待</div>'
 
+  // 远程插件（B8）：从市场条目或任意 https 地址安装，文件落站内 R2 随编辑器加载
+  let remoteInstalled = []
+  if (tab === 'market') {
+    try {
+      const r = await api('/admin/plugins/installed')
+      if (Array.isArray(r.plugins)) remoteInstalled = r.plugins
+    } catch {
+      /* 拉取失败不影响页面 */
+    }
+  }
+  const remoteRows =
+    remoteInstalled
+      .map(
+        (p) => `<div class="pl-row">
+      <span class="pl-ico">${esc(String(p.id || '?').charAt(0).toUpperCase())}</span>
+      <div class="pl-main">
+        <div class="pl-name">${esc(p.id)}<span class="pl-ver">${p.bytes ? `${Math.max(1, Math.round(p.bytes / 1024))} KB` : ''}</span></div>
+        <div class="pl-desc">来源 ${esc(p.url || '未知')}</div>
+      </div>
+      <button class="btn btn-sm" data-uninstall="${esc(p.id)}">卸载</button>
+    </div>`
+      )
+      .join('') || '<div class="empty-box">还没有远程插件——粘贴插件文件的 https 地址即可安装</div>'
+
+  // 插件配置现值（settings.serverPluginConfig = { 插件id: { 字段键: 值 } }，脏 JSON 当没配）
+  const parseSrvCfg = () => {
+    try {
+      const v = JSON.parse(state.settings.serverPluginConfig || '{}')
+      return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+    } catch {
+      return {}
+    }
+  }
   const serverRows = serverPlugins
-    .map(
-      (p) => `<div class="pl-row">
+    .map((p) => {
+      const fields = Array.isArray(p.configFields) ? p.configFields : []
+      const cfgBtn = fields.length ? `<button class="btn btn-sm" type="button" data-srv-cfg="${esc(p.id)}">配置</button>` : ''
+      // 广场数据卡（B25 P2.3）：站长看见广场带来的量，是回访广场最强的理由
+      const statsBtn = p.id === 'plaza-sync' ? `<button class="btn btn-sm" type="button" data-srv-stats="${esc(p.id)}" title="广场带来的曝光 / 点击 / 点赞">数据</button>` : ''
+      return `<div class="pl-row">
       <span class="pl-ico">${esc((p.title || p.id).charAt(0).toUpperCase())}</span>
       <div class="pl-main">
         <div class="pl-name">${esc(p.title || p.id)}${p.version ? `<span class="pl-ver">v${esc(p.version)}</span>` : ''}</div>
         <div class="pl-desc">${esc(p.description || '暂无介绍')}${p.author ? ` · ${esc(p.author)}` : ''}</div>
       </div>
+      ${statsBtn}${cfgBtn}
       <label class="switch"><input type="checkbox" data-srv-id="${esc(p.id)}" ${srvOff.has(p.id) ? '' : 'checked'}><span class="track"></span></label>
     </div>`
-    )
+    })
     .join('')
 
   await shellView(
@@ -2654,16 +3005,63 @@ async function viewPlugins() {
       <div class="panel-body" id="pl-list">${rows}</div>
     </div>
     <div class="panel">
-      <div class="panel-head">服务端插件<span class="panel-head-sub">随内核运行 · 配置在「设置 → 服务端插件」· 开发见 docs/PLUGINS.md</span></div>
+      <div class="panel-head">服务端插件<span class="panel-head-sub">随内核运行 · 带「配置」按钮的插件点开即填 · 开发见 docs/PLUGINS.md</span></div>
       <div class="panel-body" id="srv-pl-list">${serverRows}</div>
     </div>`
         : `<div class="panel">
       <div class="panel-head">插件市场<span class="panel-head-sub">持续收录中 · 自己动手见 docs/PLUGINS.md</span></div>
       <div class="panel-body">${market}</div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-head">远程插件<span class="panel-head-sub">从 https 地址安装，文件落站内 · 停用/卸载后下次打开编辑器生效</span></div>
+      <div class="panel-body">
+        <div class="pl-row" style="gap:10px;">
+          <input class="input" id="remote-url" placeholder="https://example.com/my-plugin.js" style="flex:1;min-width:200px;">
+          <button class="btn" id="btn-remote-install" type="button">安装</button>
+        </div>
+        ${remoteRows}
+      </div>
     </div>`
     }`
   )
 
+  if (tab === 'market') {
+    const installPlugin = async (url, id) => {
+      try {
+        const d = await api('/admin/plugins/install', { method: 'POST', body: id ? { url, id } : { url } })
+        toast(`插件「${d.id}」已安装，打开或刷新编辑器生效`)
+        navigate()
+      } catch (e) {
+        handleApiErr(e)
+      }
+    }
+    const btnInstall = document.getElementById('btn-remote-install')
+    if (btnInstall)
+      btnInstall.addEventListener('click', () => {
+        const url = (document.getElementById('remote-url').value || '').trim()
+        if (!url) return toast('请先填插件文件的 https 地址', false)
+        installPlugin(url, '')
+      })
+    $app.querySelectorAll('[data-mkt-install]').forEach((btn) =>
+      btn.addEventListener('click', () => installPlugin(btn.getAttribute('data-src') || '', btn.getAttribute('data-mkt-install') || ''))
+    )
+    $app.querySelectorAll('[data-uninstall]').forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-uninstall')
+        if (!(await confirmBox(`卸载插件「${id}」？文件将从站内删除，已打开的编辑器刷新后不再加载。`))) return
+        btn.disabled = true
+        try {
+          await api('/admin/plugins/uninstall', { method: 'POST', body: { id } })
+          toast('插件已卸载')
+          navigate()
+        } catch (e) {
+          btn.disabled = false
+          handleApiErr(e)
+        }
+      })
+    )
+    return
+  }
   if (tab !== 'installed') return
   $app.querySelectorAll('#pl-list input[type=checkbox]').forEach((cb) =>
     cb.addEventListener('change', async () => {
@@ -2705,6 +3103,95 @@ async function viewPlugins() {
       } finally {
         cb.disabled = false
       }
+    })
+  )
+
+  // 服务端插件配置弹窗：按 configFields 渲染表单，保存合并进 serverPluginConfig（服务端
+  // cleanServerPluginConfig 净化 + configValidate 语义校验，非法 400 直接展示）
+  $app.querySelectorAll('[data-srv-cfg]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const p = serverPlugins.find((x) => x.id === btn.getAttribute('data-srv-cfg'))
+      if (!p || !Array.isArray(p.configFields) || !p.configFields.length) return
+      const cur = parseSrvCfg()[p.id] || {}
+      const fieldsHtml = p.configFields
+        .map((f) => {
+          const val = typeof cur[f.key] === 'string' ? cur[f.key] : ''
+          const input =
+            f.type === 'textarea'
+              ? `<textarea class="input" rows="4" data-cfg-key="${esc(f.key)}" placeholder="${esc(f.placeholder || '')}">${esc(val)}</textarea>`
+              : `<input class="input" type="text" data-cfg-key="${esc(f.key)}" value="${esc(val)}" placeholder="${esc(f.placeholder || '')}">`
+          return `<div class="form-item" style="margin-bottom:12px;"><label>${esc(f.label)}</label>${input}${
+            f.help ? `<div class="switch-sub" style="margin-top:4px;">${esc(f.help)}</div>` : ''
+          }</div>`
+        })
+        .join('')
+      const m = modal(
+        `<div class="modal-head"><span>配置 — ${esc(p.title)}</span><button class="modal-close" data-close>×</button></div>
+        <div class="modal-body" style="padding:16px 20px;max-height:60vh;overflow-y:auto;">${fieldsHtml}</div>
+        <div class="modal-foot"><button class="btn" data-act="cancel">取消</button><button class="btn btn-primary" data-act="save">保存配置</button></div>`
+      )
+      m.mask.querySelector('[data-act=cancel]').addEventListener('click', m.close)
+      m.mask.querySelector('[data-act=save]').addEventListener('click', async (ev) => {
+        const saveBtn = ev.currentTarget
+        saveBtn.disabled = true
+        const cfg = {}
+        m.mask.querySelectorAll('[data-cfg-key]').forEach((el) => {
+          cfg[el.getAttribute('data-cfg-key')] = el.value
+        })
+        const all = parseSrvCfg()
+        all[p.id] = cfg
+        try {
+          const d = await api('/admin/settings', { method: 'PUT', body: { serverPluginConfig: JSON.stringify(all) } })
+          state.settings = d.settings
+          m.close()
+          toast('插件配置已保存，立即生效')
+        } catch (e) {
+          saveBtn.disabled = false
+          handleApiErr(e)
+        }
+      })
+    })
+  )
+
+  // 广场数据卡（B25 P2.3）：代理端点 /admin/plaza-stats 拿本站曝光 / 点击 / 点赞与近 7 日趋势
+  $app.querySelectorAll('[data-srv-stats]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      btn.disabled = true
+      let d
+      try {
+        d = await api('/admin/plaza-stats')
+      } catch (e) {
+        btn.disabled = false
+        return handleApiErr(e)
+      }
+      btn.disabled = false
+      const t = d.totals || {}
+      const days = Array.isArray(d.days) ? d.days : []
+      const dayRows = days
+        .map(
+          (x) =>
+            `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:6px 4px;border-top:1px solid var(--line);font-variant-numeric:tabular-nums;">
+          <span>${esc(x.day || '')}</span><span>${x.views - 0}</span><span>${x.clicks - 0}</span><span>${x.likes - 0}</span></div>`
+        )
+        .join('')
+      const m = modal(
+        `<div class="modal-head"><span>广场数据 — ${esc((d.site && d.site.name) || '')}</span><button class="modal-close" data-close>×</button></div>
+        <div class="modal-body" style="padding:16px 20px;max-height:60vh;overflow-y:auto;">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+            <div class="stat-card"><div class="stat-label">广场曝光</div><div class="stat-value">${t.views - 0}</div></div>
+            <div class="stat-card"><div class="stat-label">带回点击</div><div class="stat-value">${t.clicks - 0}</div></div>
+            <div class="stat-card"><div class="stat-label">收到点赞</div><div class="stat-value">${t.likes - 0}</div></div>
+          </div>
+          ${
+            dayRows
+              ? `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:0 4px 6px;font-size:12px;color:var(--sub);"><span>日期</span><span>曝光</span><span>点击</span><span>点赞</span></div>${dayRows}
+          <p class="switch-sub" style="margin-top:10px;">曝光 / 点击自广场 2.0 上线起计数（近 7 日逐日），点赞为累计值；「来自广场」的回访在你的统计页看来源域名。</p>`
+              : '<p class="switch-sub">暂无逐日数据——广场页有人逛起来就会出现。已收录条数：' + (d.items - 0) + ' 条。</p>'
+          }
+        </div>
+        <div class="modal-foot"><button class="btn" data-act="close">关闭</button></div>`
+      )
+      m.mask.querySelector('[data-act=close]').addEventListener('click', m.close)
     })
   )
 }
@@ -2837,6 +3324,10 @@ async function viewSettings() {
         <div class="switch-row">
           <div><div class="switch-label">留言先审后展</div><div class="switch-sub">开启后新留言需在「评论」里手动通过</div></div>
           <label class="switch"><input type="checkbox" id="st-moderateComments" ${s.moderateComments === '1' ? 'checked' : ''}><span class="track"></span></label>
+        </div>
+        <div class="switch-row">
+          <div><div class="switch-label">展示评论 IP 属地</div><div class="switch-sub">开启后文章 / 留言板 / 微博的评论区显示发言者 IP 属地（国内到省、国外到国家）。属地随新评论采集，开启前的旧评论不回填；自托管部署（无 Cloudflare 地理数据）不显示</div></div>
+          <label class="switch"><input type="checkbox" id="st-showCommentRegion" ${s.showCommentRegion === '1' ? 'checked' : ''}><span class="track"></span></label>
         </div>
         <div class="form-item" style="max-width:180px;"><label>每页文章数</label><input class="input" id="st-postsPerPage" type="number" min="1" max="50" value="${esc(s.postsPerPage)}"></div>
       </div>
@@ -2981,6 +3472,30 @@ async function viewSettings() {
         </div>
       </div>
     </div>
+
+    <div class="panel" style="padding:20px;">
+      <div class="form-section"><h3>整站搬家</h3><div class="sec-desc">把整站原样打成一个包带走：全部文章 / 微博 / 页面 / 评论 / 会员 / 分类标签 / 友链 / 图床图片。<b>只允许还原到「没有内容的站」</b>（没有未删除的文章 / 微博 / 页面；刚装好的新站请先把自带的「示例文章」与「关于我」页面删进回收站，或直接用下面的「清空本站内容」），<b>不会覆盖、不会合并</b>；包与系统版本不匹配会明确报错，不猜。包里不含管理员账号与各类密钥（新站自己登录、自己填）。换服务器 / 换域名 / 重新部署时用它。</div>
+        <div class="fav-row">
+          <a class="btn" href="/api/admin/bundle/export" download>导出整站包</a>
+          <span class="sec-desc">含全部图片，包可能较大，生成需要等一会儿</span>
+        </div>
+        <div class="fav-row" style="margin-top:14px;">
+          <button class="btn" id="btn-bundle-upload" type="button">上传整站包</button>
+          <span class="sec-desc" id="bundle-upload-status">支持 .zip（本系统导出的包）；大站也可以用 wrangler 直接传</span>
+        </div>
+        <div class="fav-row">
+          <select class="input" id="bundle-pick" style="max-width:420px;"></select>
+          <button class="btn btn-primary" id="btn-bundle-import" type="button">开始还原</button>
+          <button class="btn" id="btn-bundle-delete" type="button">删除此包</button>
+        </div>
+        <div class="sec-desc" id="bundle-import-state" style="margin-top:10px;">…</div>
+        <div class="sec-desc" id="bundle-progress"></div>
+        <div class="fav-row" style="margin-top:14px;">
+          <button class="btn btn-danger" id="btn-site-reset" type="button">清空本站内容</button>
+          <span class="sec-desc">把本站变回「没有内容的空站」：清空全部文章 / 微博 / 页面 / 评论 / 会员等内容 <b>+ 图床里的图片文件</b>，保留站点设置、管理员账号与各类密钥（已上传的整站包也不会被误删）。<b>不可撤销</b>（不是进回收站）。还原前需要清空时用它；想留底请先「导出整站包」。</span>
+        </div>
+      </div>
+    </div>
     </div>`
   )
 
@@ -3119,6 +3634,7 @@ async function viewSettings() {
       edition: (document.querySelector('input[name="st-edition"]:checked') || { value: 'zh' }).value,
       allowComments: g('st-allowComments').checked ? '1' : '0',
       moderateComments: g('st-moderateComments').checked ? '1' : '0',
+      showCommentRegion: g('st-showCommentRegion').checked ? '1' : '0',
       postsPerPage: g('st-postsPerPage').value || '10',
       membersEnabled: g('st-membersEnabled').checked ? '1' : '0',
       rankTopN: g('st-rankTopN').value || '10',
@@ -3270,6 +3786,203 @@ async function viewSettings() {
     btn.disabled = false
     btn.textContent = '立即备份'
   })
+
+  /* ---- 整站搬家（B26）：一键导出整站包 / 一键还原到空站 ----
+   * 还原是「分步驱动」：start 拿到步骤清单（每张表的分片 + 每批图片），前端循环 step——
+   * 每步一次小请求（避免一个超大请求打爆 isolate，也让中途失败可以整轮重来）；finish 收尾。
+   * 契约：只还原到「没有内容的站」（未删除的文章 / 微博 / 页面为空；新站先删示例文章与关于我页），
+   * 永不覆盖 / 合并；版本不匹配由服务端明确报错。 */
+  function bundleStateText(st) {
+    if (!st || st.state === 'idle') return '还没有导入过。导入只允许还原到「没有内容的站」——刚装好的新站请先把自带的示例文章与「关于我」页面删除（进回收站即可），或直接点下面的「清空本站内容」，再点「开始还原」。'
+    const at = st.at ? fmtDateTime(st.at) : ''
+    if (st.state === 'running') return `上次导入没跑完（${at}）——再点「开始还原」即可，还原是「从头重来」语义。`
+    if (st.state === 'failed') return `上次导入失败（${at}）：${st.error || '未知原因'}——修好后再点「开始还原」会从头重来。`
+    return `上次导入已完成（${at}）。`
+  }
+
+  function renderBundleList(data) {
+    const stEl = document.getElementById('bundle-import-state')
+    if (stEl) stEl.textContent = bundleStateText(data.import)
+    const sel = document.getElementById('bundle-pick')
+    if (!sel) return
+    const list = data.bundles || []
+    if (!list.length) {
+      sel.innerHTML = '<option value="">（还没有上传过整站包）</option>'
+      return
+    }
+    sel.innerHTML = list
+      .map(
+        (b) =>
+          `<option value="${esc(b.key)}">${esc(b.key.replace(/^bundles\//, ''))} · ${fmtSize(b.size)}${b.uploaded ? ' · ' + esc(fmtDateTime(b.uploaded)) : ''}</option>`
+      )
+      .join('')
+  }
+
+  async function refreshBundleList() {
+    renderBundleList(await api('/admin/bundle/list'))
+  }
+
+  /** 整站包上传：原始 body 直传（服务端流式落 R2，不缓冲），走 XHR 才有上传进度 */
+  function uploadBundleFile(file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/admin/bundle/upload')
+      xhr.setRequestHeader('Content-Type', 'application/zip')
+      xhr.responseType = 'json'
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+      xhr.onload = () => {
+        const d = xhr.response || {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(d)
+          return
+        }
+        // 与 api() / uploadFile() 的会话过期兜底同口径
+        if (xhr.status === 401 && state.user) {
+          state.user = null
+          authView('login')
+          toast('登录已过期，请重新登录', true)
+        }
+        reject(new Error(d.error || '上传失败'))
+      }
+      xhr.onerror = () => reject(new Error('上传失败（网络错误）'))
+      xhr.send(file)
+    })
+  }
+
+  document.getElementById('btn-bundle-upload').addEventListener('click', () => {
+    pickFiles('application/zip,.zip', false, async (files) => {
+      const file = files && files[0]
+      if (!file) return
+      const btn = document.getElementById('btn-bundle-upload')
+      const statusEl = document.getElementById('bundle-upload-status')
+      btn.disabled = true
+      try {
+        const d = await uploadBundleFile(file, (p) => {
+          statusEl.textContent = `上传中… ${p}%`
+        })
+        statusEl.textContent = `已上传：${fmtSize(d.size || 0)}`
+        toast('整站包已上传 ✅')
+        await refreshBundleList()
+        const sel = document.getElementById('bundle-pick')
+        if (sel && d.key) sel.value = d.key
+      } catch (e) {
+        statusEl.textContent = '上传失败'
+        toast(e.message, true)
+      }
+      btn.disabled = false
+    })
+  })
+
+  document.getElementById('btn-bundle-delete').addEventListener('click', async () => {
+    const sel = document.getElementById('bundle-pick')
+    const key = sel && sel.value
+    if (!key) {
+      toast('先选一个包', true)
+      return
+    }
+    if (!(await confirmBox('确定删除这个整站包吗？删除后要重新上传才能再导入。'))) return
+    const btn = document.getElementById('btn-bundle-delete')
+    btn.disabled = true
+    try {
+      await api('/admin/bundle/delete', { method: 'POST', body: { key } })
+      toast('已删除')
+      await refreshBundleList()
+    } catch (e) {
+      toast(e.message, true)
+    }
+    btn.disabled = false
+  })
+
+  document.getElementById('btn-bundle-import').addEventListener('click', async () => {
+    const sel = document.getElementById('bundle-pick')
+    const key = sel && sel.value
+    if (!key) {
+      toast('先上传并选一个整站包', true)
+      return
+    }
+    if (
+      !(await confirmBox(
+        '还原会用包里的内容重建本站：只允许还原到「没有内容的站」（未删除的文章 / 微博 / 页面为空；刚装好的新站请先删掉示例文章与「关于我」页面）。开始后本站现有内容会被清空（含回收站），不做覆盖、不做合并。确定开始吗？'
+      ))
+    )
+      return
+    const btn = document.getElementById('btn-bundle-import')
+    const prog = document.getElementById('bundle-progress')
+    btn.disabled = true
+    btn.textContent = '还原中…'
+    try {
+      const start = await api('/admin/bundle/import/start', { method: 'POST', body: { key } })
+      const steps = (start.plan && start.plan.steps) || []
+      let rows = 0
+      let images = 0
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i]
+        const r = await api('/admin/bundle/import/step', { method: 'POST', body: { key, unit: s.unit, cursor: s.cursor } })
+        rows += r.rows || 0
+        images += r.images || 0
+        prog.textContent = `正在还原：第 ${i + 1}/${steps.length} 步 · 已写入 ${rows} 行数据 / ${images} 张图片`
+      }
+      await api('/admin/bundle/import/finish', { method: 'POST', body: { key } })
+      prog.textContent = `还原完成：${rows} 行数据 · ${images} 张图片（前台页面缓存已清理）。`
+      toast('整站还原完成 ✅')
+      await refreshBundleList()
+    } catch (e) {
+      prog.textContent = '还原失败：' + e.message + '（再点「开始还原」会从头重来）'
+      toast(e.message, true)
+      await refreshBundleList().catch(() => {})
+    }
+    btn.disabled = false
+    btn.textContent = '开始还原'
+  })
+
+  /* 「清空本站内容」：不可撤销的清库操作，走「输入确认语」的强确认（服务端硬校验同一句话，
+   * 这里的输入框只是引导）。清内容 + 图床图片，保留设置 / 管理员账号 / 密钥 / 已上传的整站包
+   * ——与服务端 resetSiteContent 同口径。 */
+  const RESET_PHRASE = '清空本站' // 镜像 src/sitebundle.ts 的 RESET_CONFIRM_PHRASE（真正的闸在服务端）
+  document.getElementById('btn-site-reset').addEventListener('click', () => {
+    const m = modal(`<div class="modal-head"><span>清空本站内容</span><button class="modal-close" data-close type="button" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <p style="margin:0 0 10px;">这会把本站<b>全部内容彻底清空</b>：文章 / 微博 / 独立页面 / 评论 / 分类标签 / 友链 / 会员与积分记录，以及<b>图床里的图片文件</b>（含微博视频）。<b>不可撤销</b>（不是移入回收站，没有 30 天可恢复）。</p>
+        <p style="margin:0 0 10px;">会<b>保留</b>：站点设置、管理员账号与登录密码、各类密钥，以及<b>已上传的整站包</b>（R2 的 <code>bundles/</code>，清空不会误删你要用来还原的包）。<b>站点头像与管理员头像的图片也会保留</b>（它们跟着设置 / 账号一起留着）。</p>
+        <p style="margin:0 0 6px;">确定要继续，请在下面原样输入 <code>${esc(RESET_PHRASE)}</code>：</p>
+        <input class="input" id="site-reset-confirm" style="width:100%;" autocomplete="off" placeholder="${esc(RESET_PHRASE)}">
+        <div class="sec-desc" style="margin-top:8px;">想留底的话，先取消、点上面的「导出整站包」。</div>
+      </div>
+      <div class="modal-foot"><button class="btn" data-close type="button">取消</button><button class="btn btn-danger" id="site-reset-go" type="button" disabled>确认清空</button></div>`)
+    const input = m.mask.querySelector('#site-reset-confirm')
+    const go = m.mask.querySelector('#site-reset-go')
+    input.addEventListener('input', () => {
+      go.disabled = input.value.trim() !== RESET_PHRASE
+    })
+    input.addEventListener('keydown', (e) => {
+      // 中文输入法组词回车不算提交（全站同口径）
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229 && !go.disabled) go.click()
+    })
+    go.addEventListener('click', async () => {
+      go.disabled = true
+      go.textContent = '清空中…'
+      try {
+        const r = await api('/admin/site/reset', { method: 'POST', body: { confirm: input.value.trim() } })
+        m.close()
+        const parts = [`${r.total || 0} 行数据`]
+        if (r.images) parts.push(`${r.images} 个图床文件`)
+        const tail = r.imagesDone === false ? '（图片清理没跑完，剩下的需在 R2 里自行清理）' : ''
+        toast(`本站内容已清空：${parts.join(' / ')} ✅${tail}`)
+        const prog = document.getElementById('bundle-progress')
+        if (prog) prog.textContent = ''
+        await refreshBundleList().catch(() => {})
+      } catch (e) {
+        toast(e.message, true)
+        go.disabled = false
+        go.textContent = '确认清空'
+      }
+    })
+  })
+
+  // 演示站该区不可用（服务端 404），静默即可；api() 只在 401 时弹 toast，这里再兜一层
+  refreshBundleList().catch(() => {})
 }
 
 /* ---------------- 上传（带进度） ----------------

@@ -70,6 +70,8 @@ export interface PostRow {
   min_tier?: string
   /** 访问密码（src/protect.ts）：salt:hash（PBKDF2），空 = 未加密；不进任何后台响应 */
   password_hash?: string
+  /** AI 生成标注（编辑器「更多」自愿申报，0/1）：1 = 文章页 meta 行显示 AI 生成标识；老库 ALTER 补列前可能缺省 */
+  ai_generated?: number
   created_at: number
   updated_at: number
   /** 回收站：非 NULL = 已移入回收站（毫秒），NULL = 存活（src/trash.ts） */
@@ -105,6 +107,8 @@ export interface CommentRow {
   content: string
   status: 'approved' | 'pending'
   ip: string
+  /** 评论 IP 属地快照（src/ipregion.ts）：写库定格 cf（CN:Guangdong / US / HK），空 = 无数据不展示；公开出参走 showCommentRegion 门控，标签由 ipRegionLabel 单点格式化 */
+  ip_region?: string
   created_at: number
   /** 会员徽标冗余字段：评论列表 LEFT JOIN members 带出（member_id > 0 时非空，契约 DEVPLAN 附录 A） */
   member_name?: string
